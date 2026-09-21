@@ -36,6 +36,8 @@ where ``config.json`` declares this module as a ``stdio`` server.
 from __future__ import annotations
 
 import os
+import pathlib
+import sys
 import uuid
 
 import httpx
@@ -44,8 +46,34 @@ from mcp.server.mcpserver import MCPServer
 # The contact list of this version: one friend, read from the environment.
 FRIEND = os.environ.get("A2A_FRIEND", "the other agent")
 URL = os.environ.get("A2A_URL", "http://127.0.0.1:9110/")
-TOKEN = os.environ.get("A2A_TOKEN", "")
 TIMEOUT = float(os.environ.get("A2A_TIMEOUT", "300"))
+
+
+def _read_token() -> str:
+    """Prefer a file over an environment variable.
+
+    A variable has to be written somewhere to get here -- a config file, a
+    unit file, a shell command -- and it is visible in ``/proc/<pid>/environ``.
+    A file can be handed over once, by whoever holds the credential, without it
+    passing through a config file, a shell history or a conversation.
+
+    The variable is still honoured, because it is the only thing that works
+    when the caller is launched by something that cannot place files.
+    """
+    path = os.environ.get("A2A_TOKEN_FILE")
+    if path:
+        try:
+            return pathlib.Path(path).read_text(encoding="utf-8").strip()
+        except OSError as e:
+            # Deliberately not fatal at import: the tool reports it as an
+            # error the agent can read and relay, rather than dying silently
+            # inside an MCP handshake nobody sees.
+            print(f"a2agates: cannot read A2A_TOKEN_FILE: {e}", file=sys.stderr)
+            return ""
+    return os.environ.get("A2A_TOKEN", "")
+
+
+TOKEN = _read_token()
 
 server = MCPServer(
     name="a2agates",

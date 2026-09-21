@@ -67,7 +67,7 @@ user that will run the process.
 
 ```bash
 python3 -m venv ~/a2agates-venv
-~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.4"
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.5"
 ```
 
 Pin a tag or a commit. A commit id is a hash of its content, so "install this
