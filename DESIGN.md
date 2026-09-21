@@ -538,6 +538,13 @@ credentials to anywhere else.** Not to weaken the capable agent — to stop the
 cheap, widely-shared number from running under the account that holds the keys
 to other machines.
 
+And the corollary, which is easy to get backwards: **restricting the agent is a
+blunt control.** It applies to every caller equally, including the ones you
+trust completely, and it protects nothing against a caller who already has SSH
+to that machine — they have another door. Per-caller policy belongs on the
+token: what it unlocks, from where, until when, and for how much. Cap the agent
+only where the token itself cannot be trusted.
+
 ### And when the agent is powerful on purpose, the log stops being a nicety
 
 If prevention is off the table by design, what is left is **seeing**. Who

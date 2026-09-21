@@ -18,17 +18,21 @@ The listener runs `claude` as **its own user** — a process cannot change user.
 So whoever that user is, **a caller with a valid token can make an agent act
 with that user's privileges.**
 
-Two honest options, and the right one depends on what the phone is for:
+Two honest options, and the right one depends on **who will hold the token**:
 
 | | Pick this when |
 |---|---|
-| **A dedicated user with the bare minimum** — no sudo, no docker group, no SSH keys to anywhere | The number will be given to several callers, or you are not sure |
-| **The working agent account, privileges and all** | The whole point is for the caller to get real work done: installs, deploys, maintenance |
+| **The working agent account, privileges and all** | The token stays with someone who already has SSH to this machine, or the point is for the caller to get real work done: installs, deploys, maintenance |
+| **A dedicated user with the bare minimum** — no sudo, no docker group, no keys | The number goes to callers you would not hand a shell to |
 
-If you choose the second, know what you are choosing: **a token against that
-number is not permission to ask questions, it is permission to command an
-operator who is root on your machine.** That can be the correct choice. It must
-be a deliberate one, with one short-lived token and a record of every call.
+If you choose the first, know what you are choosing: **a token against that
+number is permission to command an operator who is root on your machine.** For
+someone who already holds SSH with sudo, that adds no risk — it is another door
+to a building they have keys to. For anyone else, it is the whole building.
+
+The honest asymmetry: an SSH key is used by a person, and a person cannot be
+talked into using it by something they read. An agent can. That is the one real
+difference, and it is about the holder, not about the phone.
 
 A dedicated user needs its own Claude authentication, which needs a real
 terminal. Plan for a human to run that step.
@@ -107,7 +111,7 @@ shared network, not through a host bridge address.
 
 ```bash
 python3 -m venv ~/a2agates-venv
-~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.9"
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.10"
 ~/a2agates-venv/bin/a2agates --help
 ```
 
@@ -141,12 +145,20 @@ Write a `CLAUDE.md` in it covering:
 Keep the folder itself poor. If the phone is for answering questions, do not
 point it at a tree full of secrets and hope it declines to read them.
 
-### And add deny rules, because a `CLAUDE.md` is not a barrier
+### Deny rules: available, and not always wanted
 
-Written instructions are judgement: the agent can be argued out of them, and
-that is exactly what a prompt injection does. **`.claude/settings.json` in the
-project folder is a barrier** — the tool call is refused by configuration and
-the agent never sees the content.
+If you do want a hard limit, `.claude/settings.json` in the project folder is a
+real one — the tool call is refused by configuration, not by the agent's
+judgement, and it never sees the content.
+
+**But think about who holds the token before reaching for this.** If the caller
+already has SSH with sudo to this machine, restricting the agent protects
+nothing: they have another door, and all you have done is make the phone worse
+at its job. Capping the agent is a blunt control — it applies to every caller
+equally, including the ones you trust completely.
+
+**The per-caller control is the token**, not the agent. Reach for deny rules
+when the number is handed to callers you would not hand a shell to.
 
 ```json
 {
