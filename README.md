@@ -174,10 +174,22 @@ Deliberately, so the first version could be evaluated:
   most valuable one.
 - **It does not decide awake/asleep.** It always starts a fresh agent.
 - The contact list is **environment variables**, there is **one token** for all
-  callers, and there is no origin check. All three are designed and unbuilt —
-  see [DESIGN.md](DESIGN.md).
+  callers, and there is no origin check — that one has to sit in the reverse
+  proxy for now, which is the wrong place. All three are designed and unbuilt.
+- There is **no call log**. When the answering agent is capable on purpose, the
+  record is the only control left — see [DESIGN.md](DESIGN.md).
 - No card signing, no callback webhook, no socket activation, no cancelling a
   call in progress.
+
+What *is* built, and verified rather than assumed:
+
+- **`--allowed-tools` and `--max-turns`**, so a scope reaches the launch. Asked
+  to write a file and run a command, the agent did neither and the file was
+  never created.
+- **`--token-expires`**, enforced on every call. A past date refuses to start;
+  a 25-second expiry took the same call from 200 to `401 credential expired`.
+  That is what makes a short-lived credential safe to hand over in a channel
+  that keeps history.
 
 ## Security
 
@@ -191,19 +203,33 @@ for an answer nobody will give — but **read-only actions are not.**
 > **A phone token is worth exactly as much as the account of the user that
 > answers it.**
 
+Worse, refusing is a *judgement*, not a barrier. Measured on a live phone: asked
+for a private key it refused well, asked for `/etc/hostname` it refused too —
+and said *"it is not the tools: I can read"*. `permission_denials` was empty
+both times. Nothing fired. Judgement can be argued with, and arguing with it is
+what a prompt injection does.
+
 Three rules follow:
 
-1. **Do not give a number to a user that holds keys to other machines.** An
-   admin account with SSH keys and docker group membership is the worst possible
-   candidate.
-2. One agent with a number, one user **with the bare minimum**.
-3. Put it behind TLS and restrict who can reach it. A token crossing the open
+1. **The number you hand out freely must not run under an account that holds
+   credentials to other machines.** An admin account with SSH keys and docker
+   group membership is the worst possible candidate for a widely-shared number.
+2. Put it behind TLS and restrict who can reach it. A token crossing the open
    internet in cleartext is not a token, it is a public URL.
+3. Give a scope, and make it reach the launch. A label that does not change
+   `--allowed-tools` changes nothing.
 
-And the consequence that shapes the rest of the design: a token labelled
-"read-only" **limits nothing by itself**. To mean anything, its scope has to
-decide *the arguments the agent is started with*. See
-[DESIGN.md](DESIGN.md).
+But do not over-apply rule 1. An agent worth phoning often *does* things —
+installs, deploys, maintains — and for that agent the privileges are the
+product, not an accident. Strip them and the phone answers but cannot help.
+
+> **A token against a capable agent is not permission to ask. It is permission
+> to command an operator who is root on that machine.**
+
+The way out is that one agent can have **more than one number**: a read-only
+reception whose tokens you hand out freely, and an operations line with full
+powers, one short-lived token and a recorded call. Same machine, same
+knowledge, different launch arguments. See [DESIGN.md](DESIGN.md).
 
 ## Licence
 

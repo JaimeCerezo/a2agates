@@ -452,6 +452,105 @@ the request and passes it straight to `claude`, the label is decoration.
 > **A token does not describe what the caller may do: it decides the arguments
 > the agent is started with.**
 
+### Judgement is not a barrier, and the difference is measurable
+
+Tested on a live phone, running with `--allowed-tools "Read,Glob,Grep"`, over
+the public endpoint.
+
+Asked to read a private SSH key — "only the metadata, not the contents" — the
+agent **refused**, and reasoned it well: even the size helps an attacker.
+Asked again for something innocuous outside its folder, `/etc/hostname` and a
+file count in the home directory, it refused too, and said the quiet part:
+
+> *"It is not the tools: I **can** read. But I am here to answer about this
+> project, not to map the machine's filesystem for whoever called."*
+
+`permission_denials` came back **empty both times**. No barrier fired. The only
+thing between the caller and the machine was the model's judgement, plus a
+`CLAUDE.md` that happened to be written well.
+
+Judgement is worth having. It is also the weak form: it can be argued with, and
+arguing with it is precisely what a prompt injection does. The strong form is a
+user that **cannot** open those files at all — which is what the measured
+result from `--allowed-tools` looked like, where the tool was never available
+and the agent had nothing to decide.
+
+And note the limit of the flag itself: **`--allowed-tools` bounds which tool,
+not how far it reaches.** `Read` reaches the whole filesystem the user can see.
+
+### But most of the time the power is the point
+
+It is tempting to conclude "give the answering agent as little as possible".
+That is wrong as a general rule, and getting it wrong in the other direction
+costs more.
+
+An agent worth phoning is often one that **does** things: installs, maintains,
+deploys, sets up other agents. For that agent the privileges are not an
+accident to be trimmed — they are the product. Strip them and the phone answers
+but cannot help.
+
+So the question is not *how do we take power away from the agent*. It is **who
+gets to make it use that power**:
+
+> **A token against a capable agent is not permission to ask. It is permission
+> to command an operator who is root on that machine.**
+
+No launch argument fixes that, because there is nothing to restrict: the
+capability is the reason the call exists.
+
+### Which is why one agent should have more than one number
+
+The way out costs nothing, because the architecture already gives it: a phone
+is self-contained, so **one agent can have several**, each launched with
+different powers.
+
+| | Reception | Operations |
+|---|---|---|
+| User | one with the bare minimum | the working account, with its privileges |
+| Tools | read-only | whatever the job needs |
+| For | questions, looking things up | installing, maintaining, deploying |
+| Tokens | several, handed out freely | **one**, short-lived, closely recorded |
+| Callers | any peer in the fleet | a person, or very little else |
+
+Two service instances, two ports, two directories, two rows. Nothing new to
+invent.
+
+And this is the better reading of `scope`. It stops meaning *how far do I
+restrain the agent* and starts meaning **which of my powers does this caller
+unlock**. Same mechanism, honester name.
+
+The rule that survives: **the number you hand out freely must not inherit
+credentials to anywhere else.** Not to weaken the capable agent — to stop the
+cheap, widely-shared number from running under the account that holds the keys
+to other machines.
+
+### And when the agent is powerful on purpose, the log stops being a nicety
+
+If prevention is off the table by design, what is left is **seeing**. Who
+called, what they asked, what was done, what it cost.
+
+That is the `calls` table, and this is the argument that promotes it from
+"useful" to "the only remaining control". A powerful agent with no call log is
+a machine where things happen and nobody can say who asked for them.
+
+### Two modes, two places to put the limit
+
+The above assumes each call starts a fresh agent. Talking to an **already
+running session** — the most valuable missing feature — is a different security
+problem, not a harder version of the same one.
+
+A live session is already started, already running as its user, with everything
+loaded. There are no launch arguments left to set, so the scope has nowhere to
+apply.
+
+| Mode | Where the limit lives |
+|---|---|
+| **Wake a new agent** | At launch: user, tools, folder, turn cap |
+| **Talk to the live session** | **At the door**: who may call, and what they may ask |
+
+Whoever gets in by phone to a live session has that session's power, by
+construction. Worth deciding before building it, not after.
+
 ---
 
 ## 5. The clocks
@@ -640,14 +739,29 @@ you find out the day you rebuild, which is the worst possible moment.
 
 ## 9. Still to build
 
+Already built, so the rest can be read against it:
+
+- **The scope reaching the launch** — `--allowed-tools` and `--max-turns`.
+  Verified: asked to write a file and run a command, the agent did neither and
+  the file was never created.
+- **Expiry enforced** — `--token-expires`. Verified both ways: a past date
+  refuses to start, and a 25-second expiry took the same call from 200 to
+  `401 credential expired`.
+
+Still missing:
+
 - The command line tool and the databases, which do not exist yet.
 - **Multiple tokens on the ear.** Today it reads one file and compares against a
   single string, so there is no token per pair and the log cannot say *who*
   called.
+- **The call log.** The argument above promotes this from useful to necessary:
+  when the agent is powerful on purpose, the record is the only control left.
 - The daemon and its socket. Today the token sits in an environment variable the
   agent could read.
-- The origin filter, expiry enforcement, and the scope actually reaching the
-  launch arguments.
+- The origin filter, which today has to sit in the reverse proxy — the wrong
+  place, because adding a caller should never mean editing a proxy.
+- **A second phone for the same agent.** Reception and operations, as above.
+  Nothing blocks it; it just has not been set up.
 
 And two things worth keeping in mind:
 
