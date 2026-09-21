@@ -166,17 +166,34 @@ class LocalClaude:
     """Run the machine's ``claude`` headless and return its JSON result."""
 
     def __init__(
-        self, *, cwd: str, executable: str = "claude", timeout: float = 300.0
+        self,
+        *,
+        cwd: str,
+        executable: str = "claude",
+        timeout: float = 300.0,
+        allowed_tools: str | None = None,
+        max_turns: int | None = None,
     ) -> None:
         self.cwd = str(Path(cwd).resolve())
         self.executable = executable
         self.timeout = timeout
+        # The first piece of "scope decides the launch arguments". A token that
+        # says read-only limits nothing on its own: write actions do park in
+        # input-required, but reads are never gated. Only the launch does.
+        self.allowed_tools = allowed_tools
+        # The clock stops it hanging; this stops it running away. They are not
+        # the same limit: a busy agent spends a lot well within its deadline.
+        self.max_turns = max_turns
 
     def _env(self) -> dict[str, str]:
         return {k: v for k, v in os.environ.items() if k in _INHERITED}
 
     async def ask(self, prompt: str, *, resume: str | None) -> dict:
         args = [self.executable, "-p", prompt, "--output-format", "json"]
+        if self.allowed_tools:
+            args += ["--allowedTools", self.allowed_tools]
+        if self.max_turns:
+            args += ["--max-turns", str(self.max_turns)]
         if resume:
             # Continuity by explicit identifier. Never --continue: that grabs
             # "the most recent transcript" for the (user, folder) pair, which
@@ -318,6 +335,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--auth-token-file", default=None)
     ap.add_argument("--claude", default="claude", help="Path to the claude to use.")
     ap.add_argument("--timeout", type=float, default=300.0)
+    ap.add_argument(
+        "--allowed-tools",
+        default=None,
+        help="Comma-separated tool list the answering agent is limited to, "
+        "passed straight to claude --allowedTools. Without it the agent can "
+        "use everything its user can reach.",
+    )
+    ap.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="Cap on agent turns per call. The timeout bounds time, this "
+        "bounds spend; they are different limits.",
+    )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
 
@@ -351,7 +382,13 @@ def main(argv: list[str] | None = None) -> int:
         auth=token is not None,
     )
 
-    engine = LocalClaude(cwd=str(cwd), executable=args.claude, timeout=args.timeout)
+    engine = LocalClaude(
+        cwd=str(cwd),
+        executable=args.claude,
+        timeout=args.timeout,
+        allowed_tools=args.allowed_tools,
+        max_turns=args.max_turns,
+    )
     handler = DefaultRequestHandler(
         agent_executor=PhoneExecutor(engine),
         task_store=InMemoryTaskStore(),
@@ -368,7 +405,8 @@ def main(argv: list[str] | None = None) -> int:
         f"a2agates {__version__}: agent={name} folder={cwd}\n"
         f"  listening on http://{args.host}:{args.port}/\n"
         f"  card advertises {url}\n"
-        f"  authentication: {'token required' if token else 'OPEN'}"
+        f"  authentication: {'token required' if token else 'OPEN'}\n"
+        f"  tools: {args.allowed_tools or 'EVERYTHING its user can reach'}"
     )
     if token is None:
         print(
