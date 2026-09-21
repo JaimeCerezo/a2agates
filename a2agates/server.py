@@ -33,6 +33,7 @@ import logging
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
@@ -114,11 +115,24 @@ class BearerAuth:
 
     The card is served unauthenticated on purpose: a caller reads it to *find
     out* which credential it needs, before holding any.
+
+    If ``expires_at`` is given, every call after that instant is refused no
+    matter how correct the token is. That is what makes a short-lived
+    credential safe to hand over in a channel that keeps history -- a chat, a
+    ticket, a transcript. Without enforcement, an expiry date is a note, not a
+    property.
     """
 
-    def __init__(self, app, *, token: str) -> None:
+    def __init__(self, app, *, token: str, expires_at: datetime | None = None) -> None:
         self.app = app
         self._token = token.strip().encode()
+        self._expires_at = expires_at
+
+    def _expired(self) -> bool:
+        return (
+            self._expires_at is not None
+            and datetime.now(timezone.utc) >= self._expires_at
+        )
 
     async def __call__(self, scope, receive, send) -> None:
         path = scope.get("path", "")
@@ -140,23 +154,36 @@ class BearerAuth:
             # one and the comparison itself leaks nothing.
             and hmac.compare_digest(parts[1].strip(), self._token)
         )
+
+        # Checked after the token, deliberately: saying "expired" to someone
+        # who never held the credential would confirm that a credential
+        # exists. Said to whoever does hold it, it is plain usefulness -- they
+        # get told why, instead of debugging a silent refusal.
+        if ok and self._expired():
+            log.warning("expired credential presented (expiry %s)", self._expires_at)
+            await _refuse(send, b'{"error":"credential expired"}')
+            return
+
         if ok:
             await self.app(scope, receive, send)
             return
 
-        body = b'{"error":"unauthorized"}'
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"www-authenticate", b"Bearer"),
-                    (b"content-length", str(len(body)).encode()),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
+        await _refuse(send, b'{"error":"unauthorized"}')
+
+
+async def _refuse(send, body: bytes) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"www-authenticate", b"Bearer"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 # --------------------------------------------------------------------------
@@ -333,6 +360,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Address advertised on the card. Defaults to where it listens.",
     )
     ap.add_argument("--auth-token-file", default=None)
+    ap.add_argument(
+        "--token-expires",
+        default=None,
+        help="Instant after which the token stops working, ISO-8601 "
+        "(2026-09-22T21:00:00Z). Naive values are read as UTC. This is what "
+        "makes a short-lived credential safe to hand over in a channel that "
+        "keeps history.",
+    )
     ap.add_argument("--claude", default="claude", help="Path to the claude to use.")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument(
@@ -369,6 +404,21 @@ def main(argv: list[str] | None = None) -> int:
             print("error: the token file is empty", file=sys.stderr)
             return 2
 
+    expires_at = None
+    if args.token_expires:
+        try:
+            expires_at = datetime.fromisoformat(args.token_expires.replace("Z", "+00:00"))
+        except ValueError:
+            print(f"error: unreadable --token-expires: {args.token_expires}", file=sys.stderr)
+            return 2
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= datetime.now(timezone.utc):
+            # Refusing to start beats starting and rejecting everything: the
+            # failure is visible now, not at the first call nobody is watching.
+            print(f"error: --token-expires is already past ({expires_at})", file=sys.stderr)
+            return 2
+
     url = args.public_url or f"http://{args.host}:{args.port}/"
     if not url.endswith("/"):
         url += "/"
@@ -398,7 +448,11 @@ def main(argv: list[str] | None = None) -> int:
         *create_agent_card_routes(card),
         *create_jsonrpc_routes(handler, rpc_url="/"),
     ]
-    middleware = [Middleware(BearerAuth, token=token)] if token else None
+    middleware = (
+        [Middleware(BearerAuth, token=token, expires_at=expires_at)]
+        if token
+        else None
+    )
     app = Starlette(routes=routes, middleware=middleware)
 
     print(
@@ -406,7 +460,8 @@ def main(argv: list[str] | None = None) -> int:
         f"  listening on http://{args.host}:{args.port}/\n"
         f"  card advertises {url}\n"
         f"  authentication: {'token required' if token else 'OPEN'}\n"
-        f"  tools: {args.allowed_tools or 'EVERYTHING its user can reach'}"
+        f"  tools: {args.allowed_tools or 'EVERYTHING its user can reach'}\n"
+        f"  token expires: {expires_at.isoformat() if expires_at else 'never'}"
     )
     if token is None:
         print(
