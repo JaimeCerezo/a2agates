@@ -107,7 +107,7 @@ shared network, not through a host bridge address.
 
 ```bash
 python3 -m venv ~/a2agates-venv
-~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.8"
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.9"
 ~/a2agates-venv/bin/a2agates --help
 ```
 
@@ -140,6 +140,39 @@ Write a `CLAUDE.md` in it covering:
 
 Keep the folder itself poor. If the phone is for answering questions, do not
 point it at a tree full of secrets and hope it declines to read them.
+
+### And add deny rules, because a `CLAUDE.md` is not a barrier
+
+Written instructions are judgement: the agent can be argued out of them, and
+that is exactly what a prompt injection does. **`.claude/settings.json` in the
+project folder is a barrier** — the tool call is refused by configuration and
+the agent never sees the content.
+
+```json
+{
+  "permissions": {
+    "deny": [
+      "Read(//home/<user>/.ssh/**)",
+      "Read(//home/<user>/.claude/**)",
+      "Read(//etc/a2agates/**)",
+      "Read(//**/.env)",
+      "Read(//**/*.cred)"
+    ]
+  }
+}
+```
+
+Verified, not assumed: with the rule in place the agent reports *"File is in a
+directory that is denied by your permission settings"* and cannot read it —
+including files it wants to read and has no reason to refuse.
+
+Note `--cwd` does **not** do this. It sets where the agent starts, not what it
+can reach: with only `Read` and `Glob`, an agent read `/etc` and another
+machine's unit files without leaving its allowed tools.
+
+One caveat: the project's own `CLAUDE.md` is loaded into context at start, so
+denying `Read` on it does not hide its contents. Deny rules bound what the
+agent can *fetch*, not what it was already given.
 
 ---
 
@@ -190,8 +223,11 @@ A systemd template unit, so more phones cost one file each:
 # /etc/systemd/system/a2agates@.service
 [Unit]
 Description=a2agates phone (%i)
-After=network-online.target
-Wants=network-online.target
+# docker.service matters when you bind to a docker bridge address: that
+# address does not exist until docker is up, so without this the service
+# restart-loops after a reboot.
+After=network-online.target docker.service
+Wants=network-online.target docker.service
 
 [Service]
 Type=exec
@@ -210,6 +246,9 @@ ExecStart=/home/<user>/a2agates-venv/bin/a2agates \
     --token-expires ${A2A_TOKEN_EXPIRES}
 Restart=on-failure
 RestartSec=5
+# Blocks privilege escalation -- including this agent's own sudo. Right for a
+# question-answering phone; wrong for one whose whole purpose is to install and
+# deploy. Decide which you are building.
 NoNewPrivileges=true
 
 [Install]
@@ -417,3 +456,4 @@ journalctl -u a2agates@<name> -n 50 --no-pager
 | Certificate fails | The name did not resolve when the route went live |
 | Proxy cannot connect | Bound to `127.0.0.1` while the proxy is in a container, or the firewall |
 | Answers, no control word | Wrong `--cwd`, so no `CLAUDE.md` |
+| Restart loop after a reboot | Bound to a docker bridge address without `After=docker.service` |

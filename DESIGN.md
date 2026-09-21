@@ -471,9 +471,23 @@ thing between the caller and the machine was the model's judgement, plus a
 
 Judgement is worth having. It is also the weak form: it can be argued with, and
 arguing with it is precisely what a prompt injection does. The strong form is a
-user that **cannot** open those files at all — which is what the measured
-result from `--allowed-tools` looked like, where the tool was never available
-and the agent had nothing to decide.
+tool call that **cannot succeed**, so there is nothing to decide.
+
+And there is one, cheap and available today: **deny rules in the project's
+`.claude/settings.json`**. Measured — with a path denied, the agent reports
+*"File is in a directory that is denied by your permission settings"* and does
+not get the content, including for files it wanted to read and had no reason to
+refuse.
+
+That is the difference worth building on. A `CLAUDE.md` saying "do not read
+secrets" is an instruction. A deny rule is a wall. Both are worth having; only
+one of them holds when someone is actively trying.
+
+Two limits to know: the project's own `CLAUDE.md` is loaded into context at
+start, so denying `Read` on it hides nothing — deny rules bound what the agent
+can *fetch*, not what it was handed. And a blocked read does not show up in the
+`permission_denials` the call reports back, so the caller cannot tell a wall
+from a refusal.
 
 And note the limit of the flag itself: **`--allowed-tools` bounds which tool,
 not how far it reaches.** `Read` reaches the whole filesystem the user can see.
