@@ -200,6 +200,7 @@ class LocalClaude:
         timeout: float = 300.0,
         allowed_tools: str | None = None,
         max_turns: int | None = None,
+        max_budget_usd: float | None = None,
     ) -> None:
         self.cwd = str(Path(cwd).resolve())
         self.executable = executable
@@ -208,9 +209,19 @@ class LocalClaude:
         # says read-only limits nothing on its own: write actions do park in
         # input-required, but reads are never gated. Only the launch does.
         self.allowed_tools = allowed_tools
-        # The clock stops it hanging; this stops it running away. They are not
-        # the same limit: a busy agent spends a lot well within its deadline.
+        # The clock stops it hanging; these stop it running away. They are not
+        # the same limit: a busy agent spends plenty well within its deadline.
+        #
+        # Of the two, the budget is the one that means what you want. A turn
+        # cap is a proxy -- one turn can be expensive and a cheap question can
+        # need six -- while money is the thing actually being spent.
+        #
+        # Honest limitation, measured: the cap is checked BETWEEN turns, not
+        # before spending. With a 0.01 cap a call still spent 0.064, because
+        # the first turn runs to completion whatever it costs. It bounds the
+        # runaway, not the single expensive answer.
         self.max_turns = max_turns
+        self.max_budget_usd = max_budget_usd
 
     def _env(self) -> dict[str, str]:
         return {k: v for k, v in os.environ.items() if k in _INHERITED}
@@ -221,6 +232,8 @@ class LocalClaude:
             args += ["--allowedTools", self.allowed_tools]
         if self.max_turns:
             args += ["--max-turns", str(self.max_turns)]
+        if self.max_budget_usd:
+            args += ["--max-budget-usd", str(self.max_budget_usd)]
         if resume:
             # Continuity by explicit identifier. Never --continue: that grabs
             # "the most recent transcript" for the (user, folder) pair, which
@@ -251,13 +264,31 @@ class LocalClaude:
                 f"the agent did not answer within {self.timeout:g}s"
             ) from None
 
+        # Parse stdout BEFORE looking at the exit code. claude exits non-zero
+        # for ordinary outcomes -- running out of turns is one -- and writes
+        # nothing at all to stderr, but it does leave a complete JSON result on
+        # stdout saying exactly what happened and what it cost.
+        #
+        # Raising on the exit code alone throws away the only explanation there
+        # is, and bills a call whose cost nobody ever sees. Measured: a call
+        # that hit --max-turns returned exit 1, empty stderr, and a stdout
+        # carrying subtype=error_max_turns and total_cost_usd=0.081.
+        payload: dict | None = None
+        try:
+            payload = json.loads(out.decode("utf-8", "replace"))
+        except json.JSONDecodeError:
+            payload = None
+
+        if payload is not None:
+            return payload
+
         if proc.returncode != 0:
             detail = (err or b"").decode("utf-8", "replace").strip()[:500]
-            raise RuntimeError(f"claude exited with code {proc.returncode}: {detail}")
-        try:
-            return json.loads(out.decode("utf-8", "replace"))
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"unreadable response from claude: {e}") from e
+            raise RuntimeError(
+                f"claude exited with code {proc.returncode} and said nothing"
+                + (f": {detail}" if detail else "")
+            )
+        raise RuntimeError("claude returned no readable JSON")
 
 
 # --------------------------------------------------------------------------
@@ -307,15 +338,11 @@ class PhoneExecutor(AgentExecutor):
         if session_id:
             self._sessions[context_id] = session_id
 
-        text = (result.get("result") or "").strip() or "(no answer)"
-
-        if result.get("is_error"):
-            await updater.failed(message=updater.new_agent_message([Part(text=text)]))
-            return
-
         # Metadata the caller is glad to have: what it cost, how many turns, and
         # what the agent was denied -- which is the clue that a restricted scope
-        # is cutting something off.
+        # is cutting something off. Built before the error branch on purpose: a
+        # call that failed still spent money, and hiding that is how a bill
+        # arrives with no matching record.
         meta = {
             "cost_usd": result.get("total_cost_usd"),
             "num_turns": result.get("num_turns"),
@@ -323,6 +350,35 @@ class PhoneExecutor(AgentExecutor):
             "permission_denials": result.get("permission_denials") or [],
             "duration_ms": result.get("duration_ms"),
         }
+
+        text = (result.get("result") or "").strip() or "(no answer)"
+
+        if result.get("is_error"):
+            # Say what actually went wrong. The caller cannot see this machine,
+            # so "it failed" costs them a round trip they may not be able to
+            # make. error_max_turns in particular is not a malfunction -- it is
+            # the turn cap doing its job, and the fix is a narrower question or
+            # a higher cap, which only the caller can choose between.
+            subtype = result.get("subtype") or "unknown"
+            turns = result.get("num_turns")
+            if subtype == "error_max_turns":
+                reason = (
+                    f"the agent ran out of turns (cap reached after {turns}). "
+                    "Ask something narrower, or the operator can raise --max-turns."
+                )
+            elif subtype == "error_max_budget_usd":
+                reason = (
+                    "the agent hit its spending cap for this call. Ask something "
+                    "narrower, or the operator can raise --max-budget-usd."
+                )
+            else:
+                reason = f"the agent failed: {subtype}"
+            if result.get("result"):
+                reason += f" — {text}"
+            await updater.failed(
+                message=updater.new_agent_message([Part(text=reason)], metadata=meta)
+            )
+            return
         await updater.add_artifact([Part(text=text)], name="response")
         await updater.complete(
             message=updater.new_agent_message([Part(text=text)], metadata=meta)
@@ -381,8 +437,17 @@ def main(argv: list[str] | None = None) -> int:
         "--max-turns",
         type=int,
         default=None,
-        help="Cap on agent turns per call. The timeout bounds time, this "
-        "bounds spend; they are different limits.",
+        help="Cap on agent turns per call. A proxy for cost: prefer "
+        "--max-budget.",
+    )
+    ap.add_argument(
+        "--max-budget",
+        type=float,
+        default=None,
+        metavar="USD",
+        help="Cap on what one call may spend, in dollars. Better than a turn "
+        "cap, which is only a proxy. Checked between turns, so a single "
+        "expensive turn can overshoot it.",
     )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -438,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         allowed_tools=args.allowed_tools,
         max_turns=args.max_turns,
+        max_budget_usd=args.max_budget,
     )
     handler = DefaultRequestHandler(
         agent_executor=PhoneExecutor(engine),
@@ -461,7 +527,9 @@ def main(argv: list[str] | None = None) -> int:
         f"  card advertises {url}\n"
         f"  authentication: {'token required' if token else 'OPEN'}\n"
         f"  tools: {args.allowed_tools or 'EVERYTHING its user can reach'}\n"
-        f"  token expires: {expires_at.isoformat() if expires_at else 'never'}"
+        f"  token expires: {expires_at.isoformat() if expires_at else 'never'}\n"
+        f"  budget per call: "
+        f"{('$' + str(args.max_budget)) if args.max_budget else 'UNCAPPED'}"
     )
     if token is None:
         print(

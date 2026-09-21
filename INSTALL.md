@@ -41,6 +41,22 @@ far it reaches*. `Read` reaches every file the user can see.
 
 For a question-answering phone, `"Read,Glob,Grep"` is a sensible start.
 
+### What one call may cost
+
+Use **`--max-budget`**, in dollars. Prefer it to `--max-turns`: a turn cap is
+only a proxy — one turn can be expensive and a cheap question can need six —
+while money is what is actually being spent.
+
+Keep a turn cap too, but loose, as a backstop against a loop rather than as the
+real limit.
+
+Know what the budget does and does not do: it is checked **between turns**, so
+the first turn runs to completion whatever it costs. Measured: a 0.01 cap still
+spent 0.064. It bounds a runaway, not a single expensive answer.
+
+A question-answering call on a small project measures around 0.05–0.08. A cap
+of 0.40 leaves room to think without leaving room to run away.
+
 ### How it gets TLS
 
 **Not optional.** The token travels in a header. Without TLS anyone on the path
@@ -91,7 +107,7 @@ shared network, not through a host bridge address.
 
 ```bash
 python3 -m venv ~/a2agates-venv
-~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.5"
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.7"
 ~/a2agates-venv/bin/a2agates --help
 ```
 
@@ -189,6 +205,7 @@ ExecStart=/home/<user>/a2agates-venv/bin/a2agates \
     --public-url ${A2A_PUBLIC_URL} \
     --auth-token-file ${A2A_TOKEN_FILE} \
     --allowed-tools ${A2A_ALLOWED_TOOLS} \
+    --max-budget ${A2A_MAX_BUDGET} \
     --max-turns ${A2A_MAX_TURNS} \
     --token-expires ${A2A_TOKEN_EXPIRES}
 Restart=on-failure

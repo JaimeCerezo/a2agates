@@ -141,14 +141,16 @@ async def ask_agent(question: str) -> str:
     parts = (status.get("message") or {}).get("parts") or []
     text = "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
 
-    if status.get("state") != "TASK_STATE_COMPLETED":
-        return f"{FRIEND} did not complete the task ({status.get('state')}): {text}"
-
     # The cost is handed back on purpose: whoever places a call should know
-    # what it spends.
+    # what it spends -- and that includes calls that failed, because those
+    # spent money too.
     meta = (status.get("message") or {}).get("metadata") or {}
     cost = meta.get("cost_usd")
     footer = f"\n\n[{FRIEND} · {cost:.4f} USD]" if cost else f"\n\n[{FRIEND}]"
+
+    if status.get("state") != "TASK_STATE_COMPLETED":
+        return f"ERROR: {FRIEND} could not answer. {text}" + footer
+
     return (text or "(empty answer)") + footer
 
 
