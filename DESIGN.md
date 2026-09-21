@@ -16,6 +16,75 @@ contact list. A phone nobody can audit is a phone you should not trust.
 
 ---
 
+## The principle: all the policy is at the door
+
+This one was learned the slow way, on 2026-09-21, by building the opposite
+first and being told to take it out.
+
+> **The door decides who comes in and which room they land in. Inside the room,
+> the agent works with everything it has.**
+
+The instinct is to harden the room: cap the tools, deny the paths, narrow what
+the answering agent may touch. It feels prudent. It is mostly wrong, for three
+reasons that only became clear once it was running:
+
+**A phone is not a new hole.** If the caller already has SSH with sudo to that
+machine, a phone giving equivalent access adds no risk — it is another door to
+a building they hold keys to. Hardening the room protects against nobody and
+taxes the one use the phone exists for.
+
+**Restricting the agent is a blunt control.** It applies to every caller
+equally, including the ones you trust completely. Admission is per-caller;
+capability is not. Put the policy where the distinctions are.
+
+**And a capped agent cannot do the job.** An agent worth phoning is usually one
+that *acts*: installs, deploys, maintains. Strip that and the phone answers but
+cannot help — you have paid the whole cost of building it and kept none of the
+value.
+
+### So what varies is the door, not the room
+
+Three dials, all of them per-caller:
+
+| Dial | What it decides |
+|---|---|
+| **Credential strength** | A bearer token, or a token *plus* a client certificate for callers who need a stronger claim |
+| **Where from** | Which addresses that credential is usable from |
+| **How long, how much** | When it dies, and what it may spend |
+
+And a fourth that is not a dial but a choice of building: **which user answers.**
+That is what decides the room. A phone is self-contained, so a machine can have
+several — one answering as the working account, another as a user with nothing.
+
+> **If you want a restricted phone, do not restrict this one. Add another.**
+
+That is better than capping a single phone, and not for tidiness: tools and
+deny rules are *configuration*. Configuration gets edited, forgotten, and
+widened by whoever touches the file next. A user without sudo, without docker
+and without keys cannot be argued into having them.
+
+### Where the room still matters
+
+Two places, and they are narrow:
+
+- **Spend.** A budget cap is not a trust control, it is a blast radius for
+  mistakes and loops. Keep it even for a fully trusted caller.
+- **A number handed to many callers**, where the token itself cannot carry the
+  distinction. There, capping the agent is the only tool left — which is a sign
+  you probably wanted a second phone.
+
+### The one asymmetry worth remembering
+
+An SSH key is used by a person, and a person cannot be talked into using it by
+something they read. **An agent can.** Content it fetches — a page, an issue, a
+reply from another agent — can ask it to do things, and it may comply.
+
+That is the only real difference between handing someone SSH and handing them a
+token. Note where it lives: in **who holds the credential**, not in the phone.
+It argues for caring who gets a token, not for crippling what answers it.
+
+---
+
 ## 1. Two halves, and why the mouth splits in two
 
 `a2agates` has an ear and a mouth:
@@ -204,6 +273,9 @@ CREATE TABLE contacts (
 CREATE TABLE callers (
   alias        TEXT PRIMARY KEY,
   token_hash   TEXT NOT NULL UNIQUE,
+  auth         TEXT NOT NULL,     -- 'token' | 'token+mtls'. Per caller, not
+                                  -- per phone: some callers earn a stronger
+                                  -- claim than others on the same number.
   allowed_from TEXT NOT NULL,     -- CIDRs. NOT NULL = you have to decide
   scope        TEXT NOT NULL,
   expires_at   TEXT,
@@ -754,12 +826,19 @@ you find out the day you rebuild, which is the worst possible moment.
 
 ## 8. Phase II
 
-- **mTLS.** With bearer, the secret crosses the wire and the destination
-  receives it whole on every call; with mTLS the private key never leaves home
-  and nothing reusable is left in transit, in a log or in a proxy. It still does
-  not prove *which machine* is calling — it proves who holds the key — but a key
-  that does not travel is far harder to steal. Open question: where the fleet CA
-  lives and who guards it.
+- **mTLS, and per caller.** With bearer, the secret crosses the wire and the
+  destination receives it whole on every call; with mTLS the private key never
+  leaves home and nothing reusable is left in transit, in a log or in a proxy.
+  It still does not prove *which machine* is calling — it proves who holds the
+  key — but a key that does not travel is far harder to steal.
+
+  The part that matters for this design: **it is a per-caller dial, not a
+  per-phone one.** The same number can require a bare token from one caller and
+  a client certificate from another, because the `auth` column says so. That is
+  how you raise the bar for a caller you trust less, without capping the agent
+  for everyone — which is the whole point of putting policy at the door.
+
+  Open question: where the fleet CA lives and who guards it.
 - **Callback webhook**, once there are enough long errands to pay for the
   double registration per pair.
 - **Talking to a live tmux session.** Still the missing piece and the most
