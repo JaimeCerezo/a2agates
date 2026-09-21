@@ -1,0 +1,402 @@
+# Setting up a phone, on your own
+
+This is written **for the agent doing the install**, on a machine nobody else
+can reach. Assume no one can look over your shoulder, fix your networking, or
+tell you what your own box looks like. Everything you need to decide is here,
+along with what to check before you declare it working.
+
+Read it through once before typing anything. Several steps are hard to undo in
+the right order.
+
+---
+
+## 0. Three decisions, before any command
+
+### Who answers the phone
+
+The listener runs `claude` as **its own user** — a process cannot change user.
+So whoever that user is, **a caller with a valid token can make an agent act
+with that user's privileges.**
+
+Two honest options, and the right one depends on what the phone is for:
+
+| | Pick this when |
+|---|---|
+| **A dedicated user with the bare minimum** — no sudo, no docker group, no SSH keys to anywhere | The number will be given to several callers, or you are not sure |
+| **The working agent account, privileges and all** | The whole point is for the caller to get real work done: installs, deploys, maintenance |
+
+If you choose the second, know what you are choosing: **a token against that
+number is not permission to ask questions, it is permission to command an
+operator who is root on your machine.** That can be the correct choice. It must
+be a deliberate one, with one short-lived token and a record of every call.
+
+A dedicated user needs its own Claude authentication, which needs a real
+terminal. Plan for a human to run that step.
+
+### What the caller may do
+
+`--allowed-tools` is passed straight to `claude`, and it is the only limit that
+actually binds. Note what it does **not** do: it bounds *which tool*, not *how
+far it reaches*. `Read` reaches every file the user can see.
+
+For a question-answering phone, `"Read,Glob,Grep"` is a sensible start.
+
+### How it gets TLS
+
+**Not optional.** The token travels in a header. Without TLS anyone on the path
+reads it, and with it they can start an agent on your machine.
+
+Work out what you already have (step 1). If you have no reverse proxy at all,
+stop and say so — this tool cannot terminate TLS by itself, and that is a real
+gap, not something to work around with plain HTTP.
+
+---
+
+## 1. Survey your own machine first
+
+Do not assume. Run these and read the answers:
+
+```bash
+# Is there a reverse proxy, and which?
+ss -ltnp 2>/dev/null | grep -E ':(80|443)\b'
+docker ps --format '{{.Names}}\t{{.Image}}' 2>/dev/null
+command -v caddy nginx apache2 2>/dev/null
+
+# Python: the package needs >= 3.10
+python3 -V
+python3 -c "import venv" 2>&1 | tail -1   # some distros ship venv separately
+
+# The claude this machine will actually run, as the user that will answer
+command -v claude && claude --version
+
+# Are you inside a container?
+[ -f /.dockerenv ] && echo "inside a container" || echo "on the host"
+
+# Firewall, which will bite later
+sudo ufw status 2>/dev/null | head -5
+```
+
+Two things to notice:
+
+**If `python3 -c "import venv"` fails**, install the distro package
+(`python3-venv` or `python3.12-venv`) before anything else.
+
+**If you are inside a container**, the networking below changes: the listener
+binds inside the container and the proxy reaches it by container name on a
+shared network, not through a host bridge address.
+
+---
+
+## 2. Install
+
+```bash
+python3 -m venv ~/a2agates-venv
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.2"
+~/a2agates-venv/bin/a2agates --help
+```
+
+**Pin the tag.** Not `main`. A commit is a hash of its content, so a pinned
+version is a promise nobody can break — and when something misbehaves later,
+the first useful question is "which version is that box running?"
+
+---
+
+## 3. Give the phone a project folder
+
+The answering agent reads its `CLAUDE.md` like any other Claude Code session.
+That file is what makes the answer *your agent's* answer rather than a generic
+model's.
+
+```bash
+mkdir -p ~/a2agates-phone
+```
+
+Write a `CLAUDE.md` in it covering:
+
+- **Who it is** and what it is allowed to talk about.
+- **How to answer**: briefly. The caller is paying and is holding an HTTP
+  connection open.
+- **What to refuse**: anything outside its purpose. Be explicit — this is
+  judgement, not a barrier, but judgement written down works better than
+  judgement improvised.
+- **A control word you invent.** A caller asks for it to confirm that your
+  agent answered and read its own knowledge. Make it distinctive.
+
+Keep the folder itself poor. If the phone is for answering questions, do not
+point it at a tree full of secrets and hope it declines to read them.
+
+---
+
+## 4. Mint the token
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Put it in a file that only the listener's user can read, **outside any
+repository**:
+
+```bash
+install -m 600 /dev/null ~/.a2agates-token
+# paste the value into it with an editor, or redirect the command above
+```
+
+Rules that matter more than they look:
+
+- **Never write it into a file that git tracks.** Deleting the commit does not
+  help; the history is forever and the only fix is a new token.
+- **Never repeat it in your own answers.** Anything you write stays in your
+  transcript, unprotected and without an expiry.
+- **Give it an expiry.** `--token-expires` is enforced on every call. 24 hours
+  is right for a first test, and it is what makes the credential safe to hand
+  over in a channel that keeps history.
+
+---
+
+## 5. Run it as a service
+
+Pick a port nothing else uses (9110 is the convention).
+
+**Where to bind** — this is the step people get wrong:
+
+| Situation | Bind to |
+|---|---|
+| Proxy in a container, listener on the host | The docker bridge gateway (`docker network inspect <net> --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}'`) |
+| Proxy and listener both on the host | `127.0.0.1` |
+| Both inside containers on a shared network | `0.0.0.0` inside the container |
+
+**Never bind `0.0.0.0` on the host.** That publishes the port to the internet
+underneath your proxy, and the proxy is where your TLS and your limits are.
+
+A systemd template unit, so more phones cost one file each:
+
+```ini
+# /etc/systemd/system/a2agates@.service
+[Unit]
+Description=a2agates phone (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=<the user that answers>
+EnvironmentFile=/etc/a2agates/%i.env
+ExecStart=/home/<user>/a2agates-venv/bin/a2agates \
+    --cwd ${A2A_CWD} \
+    --name ${A2A_NAME} \
+    --host ${A2A_HOST} \
+    --port ${A2A_PORT} \
+    --public-url ${A2A_PUBLIC_URL} \
+    --auth-token-file ${A2A_TOKEN_FILE} \
+    --allowed-tools ${A2A_ALLOWED_TOOLS} \
+    --max-turns ${A2A_MAX_TURNS} \
+    --token-expires ${A2A_TOKEN_EXPIRES}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Do not `systemctl enable` it for a first test.** If the machine reboots, a
+phone you are still evaluating should not come back by itself.
+
+`--public-url` must be the **HTTPS address callers will use**, not where it
+binds. The card advertises this, and a card advertising `127.0.0.1` is a number
+nobody can dial.
+
+If the firewall is on and the proxy is in a container, you will need to let the
+bridge reach the port:
+
+```bash
+sudo ufw allow from <bridge-subnet> to any port <port> proto tcp
+```
+
+---
+
+## 6. Put TLS in front
+
+### You need a name, and you do not need to own one
+
+Let's Encrypt will not issue for a bare IP by the ordinary path. You do not
+have to create a DNS record either: **`<your-ip>.nip.io` already resolves to
+that address.** So `203.0.113.7.nip.io` works today, with a real certificate.
+
+For production, prefer a name you control — depending on someone else's DNS for
+your machines to talk is one more thing that can fail — but it does not block a
+first install.
+
+### Traefik
+
+Traefik's Docker provider only routes to **containers**, by labels. A phone on
+the host is not a container, so you need the **file provider**, which most
+setups do not have yet. Add to its command:
+
+```yaml
+- --providers.file.directory=/dynamic
+- --providers.file.watch=true
+```
+
+and mount a directory at `/dynamic`. That change needs a Traefik restart —
+brief downtime for everything it serves, so pick your moment. After that,
+adding or changing a route is hot-reloaded and costs nothing.
+
+Then a file in that directory:
+
+```yaml
+http:
+  routers:
+    phone:
+      rule: "Host(`<your-ip>.nip.io`)"
+      entryPoints: [websecure]
+      service: phone
+      middlewares: [phone-ratelimit, phone-origin]
+      tls:
+        certResolver: <your resolver name>
+
+  services:
+    phone:
+      loadBalancer:
+        servers:
+          - url: "http://<bind-address>:<port>"
+
+  middlewares:
+    # Every call starts an agent and costs money. This does not protect against
+    # a stolen token; it protects against a stupid loop on the other end.
+    phone-ratelimit:
+      rateLimit:
+        average: 6
+        burst: 3
+        period: 1m
+
+    # TEMPORARY. The origin check belongs in the listener, against its own
+    # list, so that adding a caller never means editing a proxy. That part is
+    # not written yet, so it lives here in the meantime. Delete it when it is.
+    phone-origin:
+      ipAllowList:
+        sourceRange:
+          - "<caller-ip>/32"
+```
+
+**Do not enable the route before the name resolves.** Let's Encrypt will fail,
+and failures burn your hourly quota, so getting the order wrong is not free.
+
+### Caddy
+
+```
+<your-ip>.nip.io {
+    reverse_proxy <bind-address>:<port>
+    @notcaller not remote_ip <caller-ip>
+    respond @notcaller 403
+}
+```
+
+### nginx
+
+You will need `certbot --nginx` for the certificate, `proxy_pass` to the bind
+address, `allow`/`deny` for the origin, and `limit_req` for the rate limit.
+
+### Nothing at all
+
+Say so and stop. Plain HTTP means handing the token to anyone on the path.
+
+---
+
+## 7. Check it yourself before telling anyone it works
+
+All four, in order. Each one catches a different mistake.
+
+```bash
+# 1. The card is served, unauthenticated by design, and advertises the
+#    PUBLIC address -- not the bind address.
+curl -s https://<name>/.well-known/agent-card.json
+
+# 2. No token -> 401. If this returns 200, the listener started without a
+#    token file and anyone can run your agent.
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://<name>/ \
+  -H 'A2A-Version: 1.0' -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"role":"ROLE_USER","parts":[{"text":"x"}],"messageId":"1"}}}'
+
+# 3. With the token -> the control word from your CLAUDE.md.
+curl -s -X POST https://<name>/ \
+  -H "Authorization: Bearer $(cat ~/.a2agates-token)" \
+  -H 'A2A-Version: 1.0' -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"role":"ROLE_USER","parts":[{"text":"Who are you and what is your control word?"}],"messageId":"2"}}}'
+
+# 4. The port is NOT reachable from outside, bypassing the proxy.
+#    From another machine, or ask whoever is coordinating:
+#    nc -z -w5 <your-public-ip> <port>   ->  must refuse
+```
+
+Check 3 is the real one. If it answers but **without your control word**, the
+agent is not reading its `CLAUDE.md` — usually the wrong `--cwd`.
+
+---
+
+## 8. Report back exactly this
+
+Whoever is going to call you needs all of it, and they cannot look:
+
+- The **HTTPS URL**.
+- The **control word**, so they can confirm your agent answered.
+- **Which user answers the phone**, and what it can reach. Say it plainly —
+  this is what the caller is being trusted with.
+- The **tools** it runs with, and the turn cap.
+- **When the token expires**, as an exact instant with its timezone.
+- **Which IP you allowed**, so a 403 is diagnosable instead of mysterious.
+- The **version** you installed.
+
+Send the **token separately**, not in the same message.
+
+---
+
+## Traps that will cost you an hour
+
+**The method is `SendMessage`, not `message/send`.** The latter is the 0.3
+compatibility layer. And you must send **`A2A-Version: 1.0`** or the server
+assumes 0.3 and rejects the call with an error that does not say why.
+
+**`--public-url` is not where it binds.** Get this wrong and everything works
+locally while every caller gets a card pointing at an address they cannot
+reach.
+
+**The proxy's own timeouts.** Four clocks are involved — the caller, the proxy,
+the listener, and `claude` itself. They should grow outwards, innermost
+shortest, so whoever gives up first is the one who knows why. The proxy's
+defaults are the ones everybody forgets, and if the proxy is the shortest it
+cuts the call and nobody else notices.
+
+**If you put the origin check in the listener later**, remember the proxy is
+what it will see, not the caller. The real address is the **last** entry of
+`X-Forwarded-For` — the entries before it can be written by the caller. Taking
+the first one is the classic bug: a filter that looks like it works and can be
+forged with a header.
+
+**A restart does not extend the expiry.** The deadline is fixed at start from
+the environment file. To extend it you edit it, deliberately.
+
+---
+
+## If you get stuck
+
+Report the **exact error** rather than routing around it. A clean failure says
+more than a workaround that succeeds by another path — and whoever is
+coordinating cannot see your machine, so a paraphrase costs a round trip.
+
+Useful:
+
+```bash
+systemctl status a2agates@<name> --no-pager -n 30
+journalctl -u a2agates@<name> -n 50 --no-pager
+```
+
+| Symptom | Usually |
+|---|---|
+| `403` | The caller's address is not the one you allowed |
+| `401 unauthorized` | Token mismatch |
+| `401 credential expired` | Past `--token-expires` |
+| Card shows `127.0.0.1` | `--public-url` not set |
+| Certificate fails | The name did not resolve when the route went live |
+| Proxy cannot connect | Bound to `127.0.0.1` while the proxy is in a container, or the firewall |
+| Answers, no control word | Wrong `--cwd`, so no `CLAUDE.md` |

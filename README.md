@@ -66,11 +66,18 @@ Requires **Python ≥3.10** and a `claude` on the `PATH`, authenticated as the
 user that will run the process.
 
 ```bash
-pip install git+https://github.com/JaimeCerezo/a2agates@v0.1.0
+python3 -m venv ~/a2agates-venv
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.2"
 ```
 
 Pin a tag or a commit. A commit id is a hash of its content, so "install this
 commit" is a promise nobody can break; a tag can be moved.
+
+**To put a phone on a machine, follow [INSTALL.md](INSTALL.md).** It is written
+for whoever is doing it alone — the decisions to make first, how to survey the
+machine you are on, TLS with Traefik / Caddy / nginx, the four checks to run
+before calling it done, and the traps that cost an hour each. The rest of this
+README is what the thing is; that one is how to stand it up.
 
 ## Run the ear
 
