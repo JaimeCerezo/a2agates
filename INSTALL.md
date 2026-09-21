@@ -91,7 +91,7 @@ shared network, not through a host bridge address.
 
 ```bash
 python3 -m venv ~/a2agates-venv
-~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.2"
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.4"
 ~/a2agates-venv/bin/a2agates --help
 ```
 
