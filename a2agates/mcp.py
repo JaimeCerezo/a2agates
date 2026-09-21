@@ -124,8 +124,22 @@ async def ask_agent(question: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as http:
             response = await http.post(URL, json=body, headers=headers)
+    except httpx.TimeoutException:
+        # Named separately because it is the most likely failure and the least
+        # obvious: httpx timeout exceptions stringify to the empty string, so
+        # the generic branch below produced "could not reach X:" with nothing
+        # after the colon. An error that does not say what went wrong costs a
+        # round trip to a machine the caller may not be able to reach.
+        return (
+            f"ERROR: {FRIEND} did not answer within {TIMEOUT:g}s. The agent may "
+            "still be working -- a long question can outlast this timeout. "
+            "Raise A2A_TIMEOUT above the listener's own --timeout, or ask "
+            "something narrower."
+        )
     except httpx.HTTPError as e:
-        return f"ERROR: could not reach {FRIEND}: {e}"
+        # Same trap: several httpx errors carry no message at all.
+        detail = str(e) or type(e).__name__
+        return f"ERROR: could not reach {FRIEND}: {detail}"
 
     if response.status_code == 401:
         return f"ERROR: {FRIEND} rejected the credential (401)."
