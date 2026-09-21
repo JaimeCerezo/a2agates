@@ -529,6 +529,16 @@ different powers.
 Two service instances, two ports, two directories, two rows. Nothing new to
 invent.
 
+**And the restriction is the user, not the settings.** Do not cap one phone to
+serve both purposes: give the restricted posture its own account with fewer
+privileges and its own number. Tools and deny rules are configuration — they
+can be edited, forgotten or widened by whoever next touches the file. A user
+without sudo, without docker and without keys cannot be argued into having
+them.
+
+So the question is never "how far do I cap this phone". It is "how many phones,
+and who answers each".
+
 And this is the better reading of `scope`. It stops meaning *how far do I
 restrain the agent* and starts meaning **which of my powers does this caller
 unlock**. Same mechanism, honester name.

@@ -111,7 +111,7 @@ shared network, not through a host bridge address.
 
 ```bash
 python3 -m venv ~/a2agates-venv
-~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.10"
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.11"
 ~/a2agates-venv/bin/a2agates --help
 ```
 
@@ -144,6 +144,20 @@ Write a `CLAUDE.md` in it covering:
 
 Keep the folder itself poor. If the phone is for answering questions, do not
 point it at a tree full of secrets and hope it declines to read them.
+
+### One phone, one posture
+
+If you want a restricted phone, **do not restrict this one — add another.** A
+second user with fewer privileges, its own port, its own number. A phone is
+self-contained precisely so that this costs one more unit file.
+
+That is cleaner than capping a single phone, for a reason worth keeping in
+mind: **the user is the restriction.** Tools and deny rules are settings that
+can be edited, forgotten, or widened by whoever next touches the config. A user
+without sudo, without docker and without keys cannot be talked into having them.
+
+So the question is never "how much do I cap this phone", it is "how many phones
+do I need, and who answers each".
 
 ### Deny rules: available, and not always wanted
 
