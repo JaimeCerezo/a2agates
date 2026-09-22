@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "a2agates"
-version = "0.1.28"
+version = "0.1.29"
 description = "Give a Claude Code agent a phone number: answer A2A calls, and place them."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,8 @@ dependencies = [
 a2agates = "a2agates.server:main"
 a2agates-mcp = "a2agates.mcp:main"
 a2agates-admin = "a2agates.admin:main"
+a2agates-note = "a2agates.note:main"
+a2agates-log = "a2agates.logcli:main"
 
 [project.urls]
 Homepage = "https://github.com/JaimeCerezo/a2agates"

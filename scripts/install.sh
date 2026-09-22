@@ -21,7 +21,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.28"
+VERSION="v0.1.29"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # Fleet constants and the unit file now live in the package (a2agates.deploy),
@@ -112,56 +112,6 @@ info "installed $got"
 # whether this machine is being installed or updated.
 eval "$("$VENV/bin/python" -P -m a2agates.deploy constants)"
 
-# --- stable paths, so a contact list survives a move -----------------------
-# Reported by scm-intranet on 2026-09-22, and it is a design fault, not a
-# documentation one. Its outgoing MCP contact pointed straight into the old
-# venv. Migrating here and deleting that venv would have left the entry aimed
-# at a binary that no longer exists -- and it does not fail at startup. It
-# fails on the NEXT CALL, and from the far end it looks like the other agent is
-# simply not answering.
-#
-# So the venv path stops being something anyone else references. Contacts point
-# at these, and they keep working across an upgrade, a relocation or a rebuild.
-for b in a2agates a2agates-mcp a2agates-admin; do
-    [ -x "$VENV/bin/$b" ] && ln -sfn "$VENV/bin/$b" "/usr/local/bin/$b"
-done
-info "stable entry points: /usr/local/bin/a2agates, /usr/local/bin/a2agates-mcp"
-
-# Anything still pointing into an older install will break the moment that
-# directory goes away, so say so now rather than letting it surface as a call
-# that mysteriously never connects.
-stale=$(grep -rlsE 'a2agates[^"]*/bin/a2agates' /root/.claude.json /home/*/.claude.json \
-        /root/.claude /home/*/.claude /etc/a2agates 2>/dev/null \
-        | xargs -r grep -lsvE "$VENV|/usr/local/bin" 2>/dev/null || true)
-if [ -n "$stale" ]; then
-    echo
-    info "WARNING: these files reference an a2agates binary outside $VENV:"
-    echo "$stale" | sed 's/^/           /'
-    info "         repoint them at /usr/local/bin/a2agates-mcp BEFORE removing any"
-    info "         old venv. They will not fail on restart -- only on the next call."
-    echo
-fi
-
-# --- the mailbox -----------------------------------------------------------
-# Put there before the phone answers its first call, because "do not modify the
-# tool" is only fair if there is somewhere for a finding to go. An agent that
-# has nowhere to report something reports it by patching.
-install -d -m 755 /var/lib/a2agates
-if [ ! -f /var/lib/a2agates/mailbox.md ]; then
-    printf '# a2agates — mailbox\n\nNotes from agents on this machine. Append only.\n' \
-        > /var/lib/a2agates/mailbox.md
-    chmod 666 /var/lib/a2agates/mailbox.md
-fi
-for tool in $TOOLS; do
-    if [ -f "$(dirname "$0")/$tool" ]; then
-        install -m 755 "$(dirname "$0")/$tool" "/usr/local/bin/$tool"
-    else
-        curl -fsSL "https://raw.githubusercontent.com/JaimeCerezo/a2agates/$VERSION/scripts/$tool" \
-            -o "/usr/local/bin/$tool" 2>/dev/null && chmod 755 "/usr/local/bin/$tool" || true
-    fi
-done
-[ -x /usr/local/bin/a2agates-note ] && info "mailbox ready: a2agates-note \"...\""
-
 # --- the phone's own folder ------------------------------------------------
 # Its CLAUDE.md is what the answering agent reads on every call, so it is
 # written once and then left alone -- an update must never overwrite what an
@@ -213,16 +163,6 @@ EOF
     chown "$USER_:$USER_" "$CWD/CLAUDE.md"
 fi
 
-# --- the phone's databases -------------------------------------------------
-# Created at install, all of them, even the ones nothing writes to yet. An
-# empty table costs nothing; a missing one turns the day you need it into a
-# migration on a live phone.
-DBDIR=$STATE/$NAME
-install -d -o "$USER_" -g "$USER_" -m 700 "$DBDIR"
-sudo -u "$USER_" "$VENV/bin/python" -P -c \
-    "import a2agates.db as d, sys; print(' '.join(str(p.name) for p in d.init(sys.argv[1])))" \
-    "$DBDIR" >/dev/null && info "databases: $DBDIR/{callers.db,contacts.db}"
-
 # --- the credential --------------------------------------------------------
 install -d -m 755 "$ETC"
 TOKEN_FILE="${KEEP_TOKEN:-$ETC/$NAME.token}"
@@ -256,15 +196,18 @@ A2A_HOST=$HOST
 A2A_PORT=$PORT
 A2A_PUBLIC_URL=$URL
 A2A_TOKEN_FILE=$TOKEN_FILE
-A2A_DB=$DBDIR
+A2A_DB=$STATE/$NAME
 A2A_MAX_TURNS=$MAX_TURNS
 A2A_MAX_BUDGET=$MAX_BUDGET
 A2A_TOKEN_EXPIRES=$EXPIRES
 EOF
 chmod 644 "$ENV_FILE"
 
-"$VENV/bin/python" -P -m a2agates.deploy unit "$USER_" > "$UNIT" \
-    || die "could not render the unit file."
+# One call, the same one update.sh makes: commands, mailbox, unit file, fleet
+# limits and databases. Installing and updating place exactly the same things
+# because they run exactly the same code.
+"$VENV/bin/python" -P -m a2agates.deploy converge "$USER_" \
+    || die "could not set up the deployment."
 
 systemctl daemon-reload
 systemctl enable "a2agates@$NAME" >/dev/null 2>&1
