@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.22"
+VERSION="v0.1.23"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
@@ -117,6 +117,19 @@ for b in a2agates a2agates-mcp; do
     [ -x "$VENV/bin/$b" ] && ln -sfn "$VENV/bin/$b" "/usr/local/bin/$b"
 done
 
+# The command-line tools too. Missed until scm-intranet went looking for
+# a2agates-log on 2026-09-22 and found it absent: install.sh placed them,
+# update.sh did not, so every machine that updated rather than reinstalled was
+# missing whatever tooling had been added since. A phone can be current and
+# still have none of the commands that make it usable.
+for tool in a2agates-note a2agates-log; do
+    curl -fsSL "https://raw.githubusercontent.com/JaimeCerezo/a2agates/$VERSION/scripts/$tool" \
+        -o "/usr/local/bin/$tool.new" 2>/dev/null \
+        && mv "/usr/local/bin/$tool.new" "/usr/local/bin/$tool" \
+        && chmod 755 "/usr/local/bin/$tool" \
+        || rm -f "/usr/local/bin/$tool.new"
+done
+
 for env in "$ETC"/*.env; do
     [ -f "$env" ] || continue
     n=$(basename "$env" .env)
@@ -133,9 +146,27 @@ for env in "$ETC"/*.env; do
     # to systemd, which is not about to die, and let it happen once the call
     # has hung up.
     if grep -qs "a2agates@$n\.service" /proc/self/cgroup; then
-        systemd-run --on-active=20 --unit="a2agates-bounce-$n" \
-            systemctl restart "a2agates@$n" >/dev/null 2>&1 \
-            && printf '  phone %-16s restart scheduled in 20s (you are on this line right now)\n' "$n" \
+        # NOT a timer. v0.1.22 used `systemd-run --on-active=20` here and
+        # scm-intranet took it apart the same day: a fixed delay does not wait
+        # for anybody to hang up. It turned "you are killed at 0s" into "you
+        # are killed at 35s" -- 35 rather than 20, because a systemd timer's
+        # default AccuracySec is a minute. The call still died with SIGTERM.
+        #
+        # So the waiter watches the phone's own cgroup and restarts when the
+        # last `claude` under it is gone, which is the actual condition. It
+        # runs as its own transient unit, outside that cgroup, so it does not
+        # see itself and does not die with the call.
+        cg="/sys/fs/cgroup$(systemctl show -p ControlGroup --value "a2agates@$n")/cgroup.procs"
+        main=$(systemctl show -p MainPID --value "a2agates@$n")
+        systemd-run --collect --unit="a2agates-bounce-$n" \
+            /bin/bash -c "
+                for _ in \$(seq 1 600); do
+                    busy=\$(grep -vx '$main' '$cg' 2>/dev/null | wc -l)
+                    [ \"\$busy\" -eq 0 ] && break
+                    sleep 2
+                done
+                systemctl restart 'a2agates@$n'" >/dev/null 2>&1 \
+            && printf '  phone %-16s restart deferred until this call ends (20 min cap)\n' "$n" \
             || printf '  phone %-16s RESTART IT YOURSELF after hanging up: systemctl restart a2agates@%s\n' "$n" "$n"
         continue
     fi
