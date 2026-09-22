@@ -89,8 +89,15 @@ take the numbers rather than the reasoning:
 
 | What the phone is for | Measured | Sensible cap |
 |---|---|---|
-| Answering questions about a project | 0.05–0.40 | **0.40** |
+| Answering questions about a project | 0.05–0.40 | **2.00** |
 | Doing the work — edit, commit, push, deploy | 1.9–3.6 | **5.00** |
+
+Both caps are well above the measured cost, and that is the point. **A cap set
+near the typical cost is not a safety limit, it is a coin toss**: the question
+that needs one more look, or the file that is longer than the last one, hits it
+and pays in full for nothing. The cap exists to stop a loop, not to haggle over
+a normal answer — so leave several times the usual cost of headroom and let it
+be boring.
 
 A cap sized for answering, on a phone that can act, is the worst of both: it
 does not bound anything useful, and it kills real work halfway. Measured on
