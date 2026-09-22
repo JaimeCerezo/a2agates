@@ -17,13 +17,19 @@
 # both lists empty and answers nobody until a person admits a caller.
 #
 #   curl -fsSLO https://raw.githubusercontent.com/JaimeCerezo/a2agates/main/scripts/install.sh
-#   sudo bash install.sh --name myagent --url https://phone.example.org/ --user agentuser
+#   sudo bash install.sh --name myagent --url https://phone.example.org/ \
+#                        --user agentuser --knows /srv/projects/myagent
+#
+# --knows is where the agent's real project lives. It goes into the starter
+# CLAUDE.md so the answering agent begins each call knowing where its own
+# knowledge is, instead of only knowing which machine it is on. It is NOT the
+# phone's folder (--cwd), and the two must stay separate.
 #
 set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.3.1"
+VERSION="v0.3.2"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # Fleet constants and the unit file now live in the package (a2agates.deploy),
@@ -58,7 +64,7 @@ resolve_version() {
     fi
 }
 
-NAME=""; URL=""; USER_=""; CWD=""; HOST=""; PORT=9110
+NAME=""; URL=""; USER_=""; CWD=""; HOST=""; PORT=9110; KNOWS=""
 
 die()  { echo "a2agates: $*" >&2; exit 1; }
 info() { echo "  $*"; }
@@ -71,6 +77,7 @@ while [ $# -gt 0 ]; do
         --cwd)     CWD="$2";  shift 2 ;;
         --host)    HOST="$2"; shift 2 ;;
         --port)    PORT="$2"; shift 2 ;;
+        --knows)   KNOWS="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
         -h|--help)
             sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
@@ -140,6 +147,26 @@ eval "$("$VENV/bin/python" -P -m a2agates.deploy constants)"
 # written once and then left alone -- an update must never overwrite what an
 # operator has tuned about how their agent answers.
 install -d -o "$USER_" -g "$USER_" -m 750 "$CWD"
+
+# Where the answering agent's real knowledge lives. The phone's folder is
+# deliberately NOT the project (see the CLAUDE.md below for why), so without
+# this line the agent starts every call knowing who it is and nothing about
+# what it looks after -- it has to go and find its own repository, on a machine
+# it is only told it is on.
+#
+# Unset is written out as a visible gap rather than left silent: a starter file
+# that simply omits the most useful sentence in it reads as finished.
+if [ -n "$KNOWS" ]; then
+    KNOWLEDGE_LINE="**Your knowledge lives in \`$KNOWS\`. Read it.** That is the
+project you look after; this folder is only where you pick up the phone."
+else
+    KNOWLEDGE_LINE="> **UNFILLED — the operator should replace this line.** Say where this
+> agent's project lives, e.g. \\\`Your knowledge lives in /srv/projects/<name>.
+> Read it.\\\` Re-running the installer will not do it for you: it never
+> overwrites a CLAUDE.md that already exists. Pass \\\`--knows <path>\\\` next
+> time, or just edit the line."
+fi
+
 if [ ! -f "$CWD/CLAUDE.md" ]; then
     info "writing a starter $CWD/CLAUDE.md"
     cat > "$CWD/CLAUDE.md" <<EOF
@@ -154,6 +181,20 @@ there is no terminal and nobody at it.
 That is deliberate. A token for this phone is worth what SSH to this machine is
 worth, so crippling you would protect nobody and only stop you helping. **The
 controls are on the token** — who may call, from where, until when, how much.
+
+## Where your knowledge lives
+
+$KNOWLEDGE_LINE
+
+**This folder is not where your project lives, and that is on purpose.** It
+looks like a mistake worth fixing and it is not: the answering agent runs from
+here so that its calls land in their own transcript history. Point this folder
+at the project instead and every call drops a transcript into the same
+\`(user, folder)\` pair as the machine's live session — which resumes with
+\`claude --continue\`, meaning *"the most recent transcript"*. The next restart
+would resume a phone call instead of the conversation somebody was having.
+
+So: read your project, do not move in with it.
 
 ## Answering
 
@@ -184,6 +225,12 @@ it came from exactly that — leave a note and carry on:
 That is the whole procedure. Nothing waits on a reply.
 EOF
     chown "$USER_:$USER_" "$CWD/CLAUDE.md"
+elif [ -n "$KNOWS" ]; then
+    # Said rather than silently ignored. The file is the operator's and an
+    # update must never rewrite it, so passing --knows to an existing phone has
+    # to look like what it is: a no-op with a manual step behind it.
+    grep -qF "$KNOWS" "$CWD/CLAUDE.md" 2>/dev/null \
+        || info "note: $CWD/CLAUDE.md already exists and does not mention $KNOWS. It is yours; add the line by hand."
 fi
 
 # --- configuration ---------------------------------------------------------

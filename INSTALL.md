@@ -4,8 +4,15 @@
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/JaimeCerezo/a2agates/main/scripts/install.sh
-sudo bash install.sh --name <agent> --url https://<public-name>/ --user <who answers>
+sudo bash install.sh --name <agent> --url https://<public-name>/ \
+                     --user <who answers> --knows <the agent's project>
 ```
+
+`--knows` is where the agent's real project lives — `/srv/projects/<name>` or
+wherever your repository is. It goes into the starter `CLAUDE.md` so the
+answering agent begins every call knowing **where its own knowledge is**,
+rather than only knowing which machine it is standing on. Leave it out and the
+file says so, in a line somebody has to come back and fill in.
 
 That is the whole install: package, phone folder, token, unit file, firewall,
 enable at boot, and four checks that it really answers. It is idempotent — run
@@ -261,9 +268,32 @@ Write a `CLAUDE.md` in it covering:
   judgement improvised.
 - **A control word you invent.** A caller asks for it to confirm that your
   agent answered and read its own knowledge. Make it distinctive.
+- **Where its knowledge lives** — the `--knows` line. Without it the agent
+  starts every call knowing who it is and nothing about what it looks after.
 
-Keep the folder itself poor. If the phone is for answering questions, do not
-point it at a tree full of secrets and hope it declines to read them.
+### This folder must NOT be the agent's project
+
+It looks like a mistake worth fixing. It is not, and the reason only bites
+weeks later.
+
+The answering agent runs `claude` in this folder, so its calls land in the
+transcript history of this `(user, folder)` pair. A machine's live session
+usually resumes with **`claude --continue`**, which means *"the most recent
+transcript for that pair"*. Point the phone at the project and every call drops
+a transcript into the same pair — so the next restart of the live session
+resumes **a phone call** instead of the conversation somebody was having.
+
+The phone never steals the thread the other way: it uses `--session-id` and
+`--resume` with explicit identifiers, never `--continue`. The risk runs in one
+direction only, and it does not show up on install day.
+
+So keep the folder separate and point the agent at its project with `--knows`.
+
+What that separation does **not** buy you is confinement. `--cwd` sets where
+the agent starts, not what it can reach: measured, an agent with only `Read`
+and `Glob` read `/etc` and another machine's unit files without leaving its
+allowed tools. If you want a poorer phone, the lever is the user, not the
+folder.
 
 ### One phone, one posture
 
