@@ -21,7 +21,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.33"
+VERSION="v0.2.0"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # Fleet constants and the unit file now live in the package (a2agates.deploy),

@@ -1,11 +1,23 @@
 """The phone's own records: who may call, who I may call, and what happened.
 
-Two databases per phone, in one directory, because **the owners differ** and
-that difference is the entire point:
+**One database per phone**, with every table inside it:
 
-    /var/lib/a2agates/<agent>/
-        callers.db    owner: the answering user   (hashes only, and the log)
-        contacts.db   owner: the dialer's user    (usable tokens)
+    /var/lib/a2agates/<agent>/phone.db
+        callers    who may ring this phone   (hashes only)
+        contacts   who this phone may ring   (usable tokens)
+        calls      what happened, both directions
+
+It was two files until 2026-09-22 -- ``callers.db`` and ``contacts.db`` -- and
+the reason was a user boundary: a separate dialer account would hold the
+outbound tokens so the answering agent could not read them. **That account does
+not exist.** Both files ended up owned by the same user, so the split bought
+nothing and cost plenty: two places to look, two connections to open, the same
+``calls`` table duplicated in both, and a real person asking why his phone had
+two address books.
+
+Jaime called it, and he was right: one phone, one file, the tables inside. If
+the dialer daemon is ever built, it gets its own file *then*, for a reason that
+will be true rather than aspirational.
 
 A phone keeps everything of its own together, so it works the same whether the
 agent runs on the host or inside a container — a machine-wide file simply does
@@ -194,20 +206,67 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE calls ADD COLUMN {column} {decl}")
 
 
-def init(directory: str | Path) -> tuple[Path, Path]:
-    """Create both databases for one phone. Safe to run again."""
+def _absorb(conn: sqlite3.Connection, old: Path, tables: tuple[str, ...]) -> bool:
+    """Pull an old single-purpose database into the unified one.
+
+    Runs once per file and leaves the original renamed rather than deleted --
+    a migration that destroys the only copy is a migration you cannot check
+    afterwards.
+    """
+    if not old.exists():
+        return False
+    try:
+        # Commit first and commit again before detaching. SQLite refuses to
+        # ATTACH or DETACH inside an open transaction, and Python's sqlite3
+        # opens one implicitly on the first write -- so the first absorb
+        # inserted its rows, failed on DETACH, and left the second one unable
+        # to attach at all. It looked like "the contacts did not migrate";
+        # what actually happened is that the first migration never finished.
+        conn.commit()
+        conn.execute("ATTACH DATABASE ? AS old", (str(old),))
+        for table in tables:
+            cols = [r[1] for r in conn.execute(f"PRAGMA old.table_info({table})")]
+            if not cols:
+                continue
+            names = ", ".join(cols)
+            conn.execute(
+                f"INSERT OR IGNORE INTO {table} ({names}) SELECT {names} FROM old.{table}"
+            )
+        conn.commit()
+        conn.execute("DETACH DATABASE old")
+    except sqlite3.Error:
+        try:
+            conn.commit()
+            conn.execute("DETACH DATABASE old")
+        except sqlite3.Error:
+            pass
+        return False
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(str(old) + suffix)
+        if candidate.exists():
+            candidate.rename(str(candidate) + ".migrated")
+    return True
+
+
+def path_for(directory: str | Path) -> Path:
+    return Path(directory) / "phone.db"
+
+
+def init(directory: str | Path) -> Path:
+    """Create this phone's database. Safe to run again."""
     d = Path(directory)
     d.mkdir(parents=True, exist_ok=True)
-    callers, contacts = d / "callers.db", d / "contacts.db"
-    with _connect(callers) as c:
-        c.executescript(CALLERS_SCHEMA + CALLS_SCHEMA)
+    d.chmod(0o700)
+    phone = path_for(d)
+    with _connect(phone) as c:
+        c.executescript(CALLERS_SCHEMA + CONTACTS_SCHEMA + CALLS_SCHEMA)
         _migrate(c)
-    with _connect(contacts) as c:
-        c.executescript(CONTACTS_SCHEMA + CALLS_SCHEMA)
-        _migrate(c)
-    _restrict(callers)
-    _restrict(contacts)
-    return callers, contacts
+        # The two-file era. Absorbed on the first open after upgrading, so
+        # nobody has to run anything or remember that it happened.
+        _absorb(c, d / "callers.db", ("callers", "calls"))
+        _absorb(c, d / "contacts.db", ("contacts", "calls"))
+    _restrict(phone)
+    return phone
 
 
 def request_digest(text: str) -> tuple[str, str]:

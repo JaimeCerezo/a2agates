@@ -46,20 +46,25 @@ from mcp.server.mcpserver import MCPServer
 import sqlite3
 from datetime import datetime, timezone
 
-# The contact list. Two shapes, and the first one is the real one:
+# **One way to have contacts**: the phone's own database.
 #
-#   A2A_DB=/var/lib/a2agates/<phone>   -> read contacts.db, many destinations
-#   A2A_FRIEND / A2A_URL / A2A_TOKEN   -> one fixed friend, the old way
+#   A2A_DB=/var/lib/a2agates/<phone>
 #
-# The database is what makes the contact list mean anything. With the
-# environment, "who may this agent call" was three variables somebody set once;
-# with the table it is a row that can be added, replaced and listed, and the
-# agent still cannot dial anyone who is not in it -- because there is no way to
-# pass an address to this tool, only a name to look up.
+# There used to be a second shape -- A2A_FRIEND / A2A_URL / A2A_TOKEN, one
+# fixed destination in three environment variables -- and keeping both around
+# was a mistake that took a real person asking "why does my phone have two
+# address books?" to see. The two halves of a machine had drifted onto
+# different mechanisms: the incoming side moved to the database when the unit
+# file gained --db, while the outgoing side sat in the user's own MCP config,
+# which no update has ever touched.
+#
+# The environment shape is gone. What is left is the table: a row that can be
+# added, replaced, listed and revoked, and an agent that still cannot dial
+# anyone who is not in it -- because this tool takes a NAME, never an address.
 DB = os.environ.get("A2A_DB")
-FRIEND = os.environ.get("A2A_FRIEND", "the other agent")
-URL = os.environ.get("A2A_URL", "")
 TIMEOUT = float(os.environ.get("A2A_TIMEOUT", "300"))
+LEGACY = {k for k in ("A2A_FRIEND", "A2A_URL", "A2A_TOKEN", "A2A_TOKEN_FILE")
+          if os.environ.get(k)}
 
 
 def _contacts() -> dict[str, dict]:
@@ -67,7 +72,7 @@ def _contacts() -> dict[str, dict]:
     if not DB:
         return {}
     try:
-        conn = sqlite3.connect(f"file:{DB}/contacts.db?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{DB}/phone.db?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         return {r["alias"]: dict(r) for r in conn.execute("SELECT * FROM contacts")}
     except sqlite3.Error:
@@ -88,38 +93,13 @@ def _log(direction: str, **fields) -> int | None:
     try:
         from . import db as db_mod
 
-        return db_mod.begin(f"{DB}/contacts.db", direction=direction, **fields)
+        return db_mod.begin(f"{DB}/phone.db", direction=direction, **fields)
     except Exception:  # noqa: BLE001 - logging never breaks a call
         return None
 
 
-def _read_token() -> str:
-    """Prefer a file over an environment variable.
-
-    A variable has to be written somewhere to get here -- a config file, a
-    unit file, a shell command -- and it is visible in ``/proc/<pid>/environ``.
-    A file can be handed over once, by whoever holds the credential, without it
-    passing through a config file, a shell history or a conversation.
-
-    The variable is still honoured, because it is the only thing that works
-    when the caller is launched by something that cannot place files.
-    """
-    path = os.environ.get("A2A_TOKEN_FILE")
-    if path:
-        try:
-            return pathlib.Path(path).read_text(encoding="utf-8").strip()
-        except OSError as e:
-            # Deliberately not fatal at import: the tool reports it as an
-            # error the agent can read and relay, rather than dying silently
-            # inside an MCP handshake nobody sees.
-            print(f"a2agates: cannot read A2A_TOKEN_FILE: {e}", file=sys.stderr)
-            return ""
-    return os.environ.get("A2A_TOKEN", "")
-
-
-TOKEN = _read_token()
 CONTACTS = _contacts()
-NAMES = sorted(CONTACTS) or ([FRIEND] if URL else [])
+NAMES = sorted(CONTACTS)
 
 server = MCPServer(
     name="a2agates",
@@ -131,17 +111,33 @@ server = MCPServer(
 )
 
 
+# Said once, loudly, rather than by quietly falling back to the old behaviour.
+# A machine still configured the old way must be told so -- silently working
+# through a second mechanism is how the two halves came apart in the first
+# place.
+MISCONFIGURED = None
+if not DB:
+    MISCONFIGURED = (
+        "ERROR: this phone is configured the old way"
+        + (f" ({', '.join(sorted(LEGACY))} in the environment)" if LEGACY else "")
+        + ". Contacts now live in the phone's database. Fix it once:\n"
+        "  sudo a2agates-admin --db /var/lib/a2agates/<phone> contact add <name> \\\n"
+        "       --url https://<their phone>/ --token-file <path to their token>\n"
+        "  sudo a2agates-admin --db /var/lib/a2agates/<phone> contact config <name> "
+        "--write ~/.claude.json\n"
+        "The second command rewrites this MCP entry to use A2A_DB."
+    )
+
+
 def _destination(who: str) -> tuple[str, str, str] | str:
     """Resolve a name to (name, url, token), or return an error to show."""
+    if MISCONFIGURED:
+        return MISCONFIGURED
     if who in CONTACTS:
         row = CONTACTS[who]
         if not row.get("token"):
             return f"ERROR: «{who}» is in the contact list with no credential yet."
         return who, row["url"], row["token"]
-    if URL and who in (FRIEND, ""):
-        if not TOKEN:
-            return "ERROR: no credential configured, cannot call anyone."
-        return FRIEND, URL, TOKEN
     known = ", ".join(NAMES) or "nobody"
     return f"ERROR: «{who}» is not in the contact list. You may call: {known}."
 
@@ -176,7 +172,7 @@ async def ask_agent(who: str, question: str) -> str:
 
     def close(**fields):
         if row is not None and DB:
-            db_mod.finish(f"{DB}/contacts.db", row, **fields)
+            db_mod.finish(f"{DB}/phone.db", row, **fields)
 
     body = {
         "jsonrpc": "2.0",
@@ -257,17 +253,16 @@ async def ask_agent(who: str, question: str) -> str:
                 "each. Cheap and local: it makes no call.",
 )
 async def list_contacts() -> str:
+    if MISCONFIGURED:
+        return MISCONFIGURED
     if not NAMES:
         return "The contact list is empty. This phone cannot call anyone yet."
     lines = []
     for name in NAMES:
         row = CONTACTS.get(name)
-        if row:
-            cred = "credential held" if row.get("token") else "NO CREDENTIAL"
-            lines.append(f"{name}  {row['url']}  [{cred}]"
-                         + (f"  {row['note']}" if row.get("note") else ""))
-        else:
-            lines.append(f"{name}  {URL}  [credential held]")
+        cred = "credential held" if row.get("token") else "NO CREDENTIAL"
+        lines.append(f"{name}  {row['url']}  [{cred}]"
+                     + (f"  {row['note']}" if row.get("note") else ""))
     return "\n".join(lines)
 
 

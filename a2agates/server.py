@@ -751,8 +751,7 @@ def main(argv: list[str] | None = None) -> int:
 
     log_db = callers_db = None
     if args.db:
-        path, _ = db.init(args.db)
-        log_db = callers_db = str(path)
+        log_db = callers_db = str(db.init(args.db))
         # Said at startup rather than left to be discovered. A call that
         # started and never closed is the trace of one that was killed
         # halfway -- and if this phone can write, halfway may mean a commit

@@ -83,7 +83,7 @@ def _mint(path: Path, alias: str) -> str:
 
 def caller_rotate(args) -> None:
     """New token, same caller. Everything else about the row stays put."""
-    path = _dir(args) / "callers.db"
+    path = db_mod.path_for(_dir(args))
     token = secrets.token_urlsafe(32)
     with _conn(path) as c:
         n = c.execute(
@@ -100,7 +100,7 @@ def caller_rotate(args) -> None:
 
 
 def caller_add(args) -> None:
-    path = _dir(args) / "callers.db"
+    path = db_mod.path_for(_dir(args))
     token = _mint(path, args.alias)
     expires = (
         (datetime.now(timezone.utc) + timedelta(days=args.days)).isoformat(
@@ -144,7 +144,7 @@ def caller_add(args) -> None:
 
 
 def caller_list(args) -> None:
-    with _conn(_dir(args) / "callers.db") as c:
+    with _conn(db_mod.path_for(_dir(args))) as c:
         rows = c.execute("SELECT * FROM callers ORDER BY created_at").fetchall()
     if not rows:
         print("no callers registered -- this phone still uses its single token file.")
@@ -157,7 +157,7 @@ def caller_list(args) -> None:
 
 
 def caller_revoke(args) -> None:
-    with _conn(_dir(args) / "callers.db") as c:
+    with _conn(db_mod.path_for(_dir(args))) as c:
         n = c.execute(
             "UPDATE callers SET revoked_at=? WHERE alias=? AND revoked_at IS NULL",
             (_now(), args.alias),
@@ -170,7 +170,7 @@ def caller_revoke(args) -> None:
 # contacts: who this phone may ring
 # --------------------------------------------------------------------------
 def contact_add(args) -> None:
-    path = _dir(args) / "contacts.db"
+    path = db_mod.path_for(_dir(args))
     token = args.token
     if token == "-":
         # Read from stdin, never from an argument: an argument is visible in
@@ -190,7 +190,7 @@ def contact_add(args) -> None:
 
 
 def contact_list(args) -> None:
-    with _conn(_dir(args) / "contacts.db") as c:
+    with _conn(db_mod.path_for(_dir(args))) as c:
         rows = c.execute("SELECT * FROM contacts ORDER BY alias").fetchall()
     if not rows:
         print("no contacts -- this phone cannot call anyone.")
@@ -203,28 +203,62 @@ def contact_list(args) -> None:
 
 
 def contact_config(args) -> None:
-    """Print the MCP config for one contact, ready to hand to an agent."""
-    with _conn(_dir(args) / "contacts.db") as c:
-        r = c.execute("SELECT * FROM contacts WHERE alias=?", (args.alias,)).fetchone()
-    if r is None:
-        sys.exit(f"a2agates-admin: no contact «{args.alias}».")
-    cfg = {
-        "mcpServers": {
-            "a2agates": {
-                # The stable path, never the venv: an install that moves would
-                # otherwise break the contact, and not at startup -- on the
-                # next call, which looks like the other agent not answering.
-                "command": "/usr/local/bin/a2agates-mcp",
-                "env": {
-                    "A2A_FRIEND": r["alias"],
-                    "A2A_URL": r["url"],
-                    "A2A_TOKEN_FILE": args.token_file or "<path to the token file>",
-                    "A2A_TIMEOUT": "420",
-                },
-            }
-        }
+    """Print, or install, the MCP entry that lets an agent use this phone.
+
+    The gap this closes, reported by scm-intranet on 2026-09-22: every update
+    rewrites the unit file and the environment file, and **none of them has
+    ever touched the user's own MCP config**. So the incoming side of a machine
+    moved to the database while the outgoing side stayed on the old
+    environment-variable shape, and the two halves of the same phone ended up
+    on different mechanisms. It looked, correctly, like having two address
+    books.
+
+    There is nothing to hand-edit now: one entry, pointing at the phone's
+    directory, and the contacts come from the table.
+    """
+    directory = _dir(args)
+    with _conn(db_mod.path_for(directory)) as c:
+        rows = c.execute("SELECT alias FROM contacts ORDER BY alias").fetchall()
+    entry = {
+        # The stable path, never the venv: an install that moves would
+        # otherwise break this, and not at startup -- on the next call, which
+        # looks exactly like the other agent not answering.
+        "command": "/usr/local/bin/a2agates-mcp",
+        "env": {"A2A_DB": str(directory), "A2A_TIMEOUT": "420"},
     }
-    print(json.dumps(cfg, indent=2))
+
+    if not args.write:
+        print(json.dumps({"mcpServers": {"a2agates": entry}}, indent=2))
+        if rows:
+            print(f"\n# reachable: {', '.join(r['alias'] for r in rows)}")
+        return
+
+    target = Path(args.write).expanduser()
+    config = {}
+    if target.exists():
+        try:
+            config = json.loads(target.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            sys.exit(f"a2agates-admin: {target} is not valid JSON; not touching it.")
+        # A backup before rewriting somebody's config, because this file holds
+        # far more than our entry and a bad merge would be expensive.
+        backup = target.with_suffix(target.suffix + ".before-a2agates")
+        backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"backed up to {backup}")
+
+    servers = config.setdefault("mcpServers", {})
+    before = servers.get("a2agates")
+    servers["a2agates"] = entry
+    target.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    if before == entry:
+        print(f"{target}: already pointing at {directory}")
+    else:
+        print(f"{target}: a2agates now reads its contacts from {directory}")
+        if before and "A2A_URL" in (before.get("env") or {}):
+            print("  (replaced the old fixed-destination entry)")
+    print(f"  reachable: {', '.join(r['alias'] for r in rows) or 'nobody yet'}")
+    print("  The agent must be restarted for this to take effect.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -287,9 +321,10 @@ def main(argv: list[str] | None = None) -> int:
     a = t.add_parser("list", help="show contacts")
     a.set_defaults(func=contact_list)
 
-    a = t.add_parser("config", help="print MCP config for a contact")
-    a.add_argument("alias")
-    a.add_argument("--token-file", default=None)
+    a = t.add_parser("config", help="print or install the agent's MCP entry")
+    a.add_argument("--write", metavar="FILE", default=None,
+                   help="Merge the entry into this JSON config (e.g. "
+                        "~/.claude.json), keeping a backup. Without it, print.")
     a.set_defaults(func=contact_config)
 
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
