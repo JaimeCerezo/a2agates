@@ -21,7 +21,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.18"
+VERSION="v0.1.19"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # ---------------------------------------------------------------------------
@@ -117,6 +117,36 @@ info "installing a2agates $VERSION"
 
 got=$("$VENV/bin/python" -P -c 'import a2agates;print(a2agates.__version__)')
 info "installed $got"
+
+# --- stable paths, so a contact list survives a move -----------------------
+# Reported by scm-intranet on 2026-09-22, and it is a design fault, not a
+# documentation one. Its outgoing MCP contact pointed straight into the old
+# venv. Migrating here and deleting that venv would have left the entry aimed
+# at a binary that no longer exists -- and it does not fail at startup. It
+# fails on the NEXT CALL, and from the far end it looks like the other agent is
+# simply not answering.
+#
+# So the venv path stops being something anyone else references. Contacts point
+# at these, and they keep working across an upgrade, a relocation or a rebuild.
+for b in a2agates a2agates-mcp; do
+    [ -x "$VENV/bin/$b" ] && ln -sfn "$VENV/bin/$b" "/usr/local/bin/$b"
+done
+info "stable entry points: /usr/local/bin/a2agates, /usr/local/bin/a2agates-mcp"
+
+# Anything still pointing into an older install will break the moment that
+# directory goes away, so say so now rather than letting it surface as a call
+# that mysteriously never connects.
+stale=$(grep -rlsE 'a2agates[^"]*/bin/a2agates' /root/.claude.json /home/*/.claude.json \
+        /root/.claude /home/*/.claude /etc/a2agates 2>/dev/null \
+        | xargs -r grep -lsvE "$VENV|/usr/local/bin" 2>/dev/null || true)
+if [ -n "$stale" ]; then
+    echo
+    info "WARNING: these files reference an a2agates binary outside $VENV:"
+    echo "$stale" | sed 's/^/           /'
+    info "         repoint them at /usr/local/bin/a2agates-mcp BEFORE removing any"
+    info "         old venv. They will not fail on restart -- only on the next call."
+    echo
+fi
 
 # --- the mailbox -----------------------------------------------------------
 # Put there before the phone answers its first call, because "do not modify the
@@ -278,8 +308,17 @@ systemctl restart "a2agates@$NAME"
 # --- let the proxy through -------------------------------------------------
 if [ "$HOST" != "127.0.0.1" ] && command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
     subnet="${HOST%.*}.0/16"
-    ufw allow from "$subnet" to any port "$PORT" >/dev/null 2>&1 \
-        && info "ufw: opened $PORT to $subnet"
+    # Checked first, and written as PORT/tcp. ufw only deduplicates rules that
+    # match exactly, so a machine that already had its own "9110/tcp" rule
+    # ended up with two entries for the same port after this script added a
+    # bare "9110" -- harmless, but confusing in a place where confusion is
+    # expensive. Reported by scm-intranet, 2026-09-22.
+    if ufw status | grep -qE "^$PORT/tcp[[:space:]].*ALLOW.*${subnet%/*}"; then
+        info "ufw: $PORT already open to $subnet"
+    else
+        ufw allow from "$subnet" to any port "$PORT" proto tcp >/dev/null 2>&1 \
+            && info "ufw: opened $PORT/tcp to $subnet"
+    fi
 fi
 
 # --- verify, because "it started" is not "it answers" ----------------------
@@ -314,6 +353,7 @@ echo "  phone:  $NAME ($got), answering as $USER_"
 echo "  limits: $MAX_TURNS turns, \$$MAX_BUDGET per call   [fleet constants]"
 echo "  token:  $TOKEN_FILE   (expires $EXPIRES)"
 [ "${NEW_TOKEN:-}" = yes ] && echo "          NEW. Give callers the PATH and let them fetch it; never paste the value."
-echo "  update: sudo bash install.sh --name $NAME --url $URL --user $USER_"
+echo "  dial:   /usr/local/bin/a2agates-mcp   <- point contacts here, never at the venv"
+echo "  update: sudo bash update.sh"
 echo
 [ "$ok" -ge 2 ] || die "the phone is not answering correctly. Fix that before telling anyone the number."

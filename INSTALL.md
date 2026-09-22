@@ -40,6 +40,32 @@ left:
 set by the script, and the code is not modified locally. See
 [GOVERNANCE.md](GOVERNANCE.md).
 
+## Migrating an install that was set up by hand
+
+The script owns `/opt/a2agates/venv`, `/etc/a2agates/<name>.env` and the
+`a2agates@<name>` unit. If your phone lives anywhere else, do this **in order**,
+or you will end up with two phones fighting over the same port:
+
+```bash
+sudo cp /etc/a2agates/<old>.env /etc/a2agates/<new-name>.env  # keeps token + folder
+sudo systemctl disable --now a2agates@<old>
+sudo rm /etc/a2agates/<old>.env                                # so it cannot start
+sudo bash install.sh --name <new-name> --url https://… --user <user> \
+                     --host <your host> --port <your port>
+```
+
+Step 1 is what saves the token: the script reads the existing `.env` and keeps
+the credential and the project folder rather than minting new ones. Pass
+`--host` and `--port` explicitly — the autodetect picks Docker's *default*
+bridge, which is often not the one your proxy is on.
+
+> **Before deleting the old venv, repoint anything that referenced it.** An
+> outgoing MCP contact pointing at `…/oldvenv/bin/a2agates-mcp` does not fail
+> when you restart. It fails on the next call, and from the far end it looks
+> like the other agent has stopped answering. Use
+> `/usr/local/bin/a2agates-mcp`, which the script keeps current. It warns you
+> if it finds such a reference, but check anyway — nothing else will.
+
 **Stop here if it worked.** Everything below is the reasoning, the by-hand
 version, and the traps — read it when something breaks or when you are deciding
 something the script does not decide for you.

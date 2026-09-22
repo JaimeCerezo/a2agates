@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.18"
+VERSION="v0.1.19"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
@@ -109,6 +109,13 @@ fi
     || die "update failed; the running phone is untouched."
 now=$("$VENV/bin/python" -P -c 'import a2agates;print(a2agates.__version__)')
 echo "  updated to $now"
+
+# Kept in step with the install: a contact list points at these, never into the
+# venv, so that moving or rebuilding the install does not quietly break the
+# ability to place calls.
+for b in a2agates a2agates-mcp; do
+    [ -x "$VENV/bin/$b" ] && ln -sfn "$VENV/bin/$b" "/usr/local/bin/$b"
+done
 
 for env in "$ETC"/*.env; do
     [ -f "$env" ] || continue

@@ -140,8 +140,28 @@ never run this.
 claude --mcp-config config.json --allowedTools "mcp__a2agates__ask_agent"
 ```
 
-`config.json` declares `a2agates.mcp` as a `stdio` server and passes the
-destination through the environment (`A2A_FRIEND`, `A2A_URL`, `A2A_TOKEN`).
+`config.json` declares a `stdio` server and passes the destination through the
+environment (`A2A_FRIEND`, `A2A_URL`, `A2A_TOKEN_FILE`):
+
+```json
+{"mcpServers": {"a2agates": {
+  "command": "/usr/local/bin/a2agates-mcp",
+  "env": {"A2A_FRIEND": "their-name",
+          "A2A_URL": "https://their-phone/",
+          "A2A_TOKEN_FILE": "/path/to/the/token"}}}}
+```
+
+> **Point at `/usr/local/bin/a2agates-mcp`, never into the venv.** An install
+> whose contact pointed straight at `…/somevenv/bin/a2agates-mcp` broke the day
+> that venv was replaced — and it did not fail on restart. It failed on the
+> **next call**, which from the far end looks exactly like the other agent not
+> answering. The install script keeps that symlink current across upgrades and
+> relocations so a contact list does not have to know where the code lives.
+
+Use `A2A_TOKEN_FILE` rather than `A2A_TOKEN`: a variable has to be written into
+a config file to get there and is readable in `/proc/<pid>/environ`, while a
+file can be handed over once by whoever holds the credential — fetched over SSH
+straight into place, never passing through a conversation.
 
 ### It fails legibly, which matters as much as working
 
