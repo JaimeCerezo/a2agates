@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import hashlib
 import hmac
 import json
@@ -61,6 +62,17 @@ from starlette.middleware import Middleware
 from . import __version__, db
 
 log = logging.getLogger("a2agates.server")
+
+# The caller's address, carried from the ASGI layer to the executor. It is
+# known where the connection is accepted and needed where the call is logged,
+# and there is nothing in between that passes it: the A2A RequestContext
+# describes the message, not the socket. A context variable is the narrow way
+# across -- it follows the request's own task and never leaks into another's.
+#
+# Today this is the ONLY attribution there is. With a single shared token the
+# log cannot say *who* called, only from where. The callers table is what turns
+# that into a name.
+_remote = contextvars.ContextVar("a2agates_remote", default=None)
 
 BEARER = "bearer"
 
@@ -199,6 +211,8 @@ class BearerAuth:
             return
 
         if ok:
+            client = scope.get("client") or (None, None)
+            _remote.set(client[0])
             await self.app(scope, receive, send)
             return
 
@@ -438,6 +452,7 @@ class PhoneExecutor(AgentExecutor):
             task_id=task_id,
             context_id=context_id,
             auth="token",
+            remote_addr=_remote.get(),
             request_sha256=digest,
             request_excerpt=excerpt,
         ) if self._log_db else None
