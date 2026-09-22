@@ -762,6 +762,54 @@ scope.
 
 > The clock stops it hanging. The turn cap stops it running away.
 
+### And the budget turned out to be the price lever, not just the blast radius
+
+Measured across two machines on 2026-09-22 (scm-intranet's finding **B6**; the
+errand was sent from Aris). The same fleet worked two ways that morning:
+
+| Path | Took | Steps | ~USD |
+|---|---|---|---|
+| Errand over SSH | 12 min | 116 | 10,41 |
+| Phone call | 4 min | 26 | 2,69 |
+
+The call did *more* useful work and cost a quarter. SSH is not expensive —
+**SSH spends nothing**: `cat`, `systemctl`, a restart, all zero. What spends is
+**the conversation of the agent doing the work**, and that happens either way,
+because an errand over SSH ends in the same resident agent. SSH is the
+envelope, not the cost.
+
+What made the call cheap was **the cap**: 5 USD and 20 turns force you to ask
+for one thing at a time. And the reason that matters is the mechanism: of 32,6 M
+tokens that morning, **30,8 M (94,5 %) were context re-read** — every step
+re-reads the whole prior conversation; only 0,5 M were written. **Cost grows
+with conversation length times number of steps, not with work done.** Twice the
+conversation costs well over twice.
+
+So the budget does two jobs, and the second was the unplanned one:
+
+> It bounds the accident **and** it chops the work up. One errand, one call.
+
+### `cost_usd` is one side of the call, and it is the answering side
+
+The meta returned to the caller carries `cost_usd = total_cost_usd` of the
+**answering** process — what the `claude -p` on the far machine spent, as that
+CLI accounts for it. It is not the caller's own conversation, and it is not the
+two added up. **Nobody ever sees the full price of a call in one number**: the
+caller's side lives only in the caller's own session.
+
+That figure is the one of record, because it has a definition. Numbers
+recomputed from transcripts usually do not match it, and both ways of getting it
+wrong were measured here:
+
+- **The JSONL repeats.** Each assistant turn is written 2–4 times with identical
+  `usage`. Summing lines overcounts 2–3x; dedupe by message id first.
+- **Cache tokens are most of the bill.** `cache_creation_input_tokens` bills
+  above plain input and `cache_read_input_tokens` below it; leave either out —
+  and the read is 94,5 % of the traffic — and the total is off by a factor.
+
+When two machines disagree about what a call cost, that is the first thing to
+check, not a billing mystery.
+
 ---
 
 ## 6. Origin
