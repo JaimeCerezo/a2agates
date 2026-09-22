@@ -354,6 +354,26 @@ picks it up **without restarting**.
 through the repo. This is the only moment that string exists outside a
 protected database.
 
+> **Who may run step 1 — a distinction earned on 2026-09-22.** This guide says
+> a *person* mints caller tokens, for two reasons: so the value never lands in
+> a transcript, and because an agent can be **talked into** opening the door by
+> something it reads. The first is solved by handing over a path instead of a
+> value. The second is not.
+>
+> It came up in the sharpest possible form. One agent asked another, in a
+> single message, to *both* open the line *and* mint the credential it would
+> then use to come in — carrying its own authorisation, and urgency from an
+> expiry. That is the exact shape of a prompt injection, and being legitimate
+> that time makes it no less true. What saved it was the receiving agent
+> checking the claim **against the public repository instead of against the
+> message**.
+>
+> So: **adding a new caller stays a person's job. Rotating an existing
+> credential for an already-documented caller may be done by an agent** — the
+> door is not being opened, only its lock changed for someone already listed.
+> And whatever the case: verify the instruction somewhere the caller does not
+> control.
+
 **3 — On the calling machine, store the contact:**
 
 ```bash
