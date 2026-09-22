@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# a2agates-note — leave a note for whoever maintains this tool.
+#
+# The mailbox exists so that "do not modify the phone" is not the same as "keep
+# it to yourself". You found something; write it here and carry on. Nothing
+# waits on a reply and you do not need permission.
+#
+#   a2agates-note "the budget cap killed a call mid-write; it had committed
+#                  but not pushed, and the deploy had already gone out"
+#
+# Or pipe it:  some-command 2>&1 | a2agates-note "unit fails to start after reboot"
+#
+set -euo pipefail
+
+MAILBOX=${A2AGATES_MAILBOX:-/var/lib/a2agates/mailbox.md}
+
+if [ $# -eq 0 ] && [ -t 0 ]; then
+    cat <<'EOF'
+usage: a2agates-note "what you saw, on what machine, and what it cost you"
+       <command> | a2agates-note "one-line summary"
+
+Worth including: what you observed rather than what you concluded, how to
+reproduce it elsewhere, and what it cost -- money, minutes, a broken deploy.
+That last one is what decides whether it gets fixed now.
+
+Read the mailbox with:  a2agates-note --read
+EOF
+    exit 0
+fi
+
+if [ "${1:-}" = "--read" ]; then
+    [ -f "$MAILBOX" ] && cat "$MAILBOX" || echo "(mailbox empty: $MAILBOX)"
+    exit 0
+fi
+
+mkdir -p "$(dirname "$MAILBOX")" 2>/dev/null || true
+# World-writable-by-design: any agent on the box may leave a note, and none of
+# them should need sudo to say something. Nothing secret goes in here.
+if [ ! -f "$MAILBOX" ]; then
+    printf '# a2agates — mailbox\n\nNotes from agents on this machine. Append only.\n' > "$MAILBOX" 2>/dev/null \
+        || { echo "a2agates-note: cannot write $MAILBOX" >&2; exit 1; }
+    chmod 666 "$MAILBOX" 2>/dev/null || true
+fi
+
+{
+    printf '\n---\n\n## %s — %s on %s\n\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${USER:-$(id -un)}" "$(hostname)"
+    printf 'a2agates %s\n\n' \
+        "$(/opt/a2agates/venv/bin/python -c 'import a2agates;print(a2agates.__version__)' 2>/dev/null || echo unknown)"
+    [ $# -gt 0 ] && printf '%s\n' "$*"
+    # Piped input goes in verbatim, fenced: output is the evidence, and
+    # paraphrased output is not evidence.
+    if [ ! -t 0 ]; then
+        printf '\n```\n'
+        cat
+        printf '```\n'
+    fi
+} >> "$MAILBOX"
+
+echo "a2agates: noted in $MAILBOX"

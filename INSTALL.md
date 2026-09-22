@@ -1,12 +1,48 @@
 # Setting up a phone, on your own
 
-This is written **for the agent doing the install**, on a machine nobody else
-can reach. Assume no one can look over your shoulder, fix your networking, or
-tell you what your own box looks like. Everything you need to decide is here,
-along with what to check before you declare it working.
+## Read this part only
 
-Read it through once before typing anything. Several steps are hard to undo in
-the right order.
+```bash
+curl -fsSLO https://raw.githubusercontent.com/JaimeCerezo/a2agates/main/scripts/install.sh
+sudo bash install.sh --name <agent> --url https://<public-name>/ --user <who answers>
+```
+
+That is the whole install: package, phone folder, token, unit file, firewall,
+enable at boot, and four checks that it really answers. It is idempotent — run
+it again to update, and it keeps your token and your `CLAUDE.md`.
+
+To update later, cheaper still, no arguments at all:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/JaimeCerezo/a2agates/main/scripts/update.sh
+sudo bash update.sh            # every phone on this machine
+sudo bash update.sh --check    # look, change nothing
+```
+
+**Three things the script cannot do for you**, and they are the only decisions
+left:
+
+1. **Choose the user that answers** (`--user`). A caller with a valid token
+   makes an agent act as that user. Pick the working account when the token
+   stays with someone who already has SSH here, or when the point is real work.
+   Pick a user with nothing when the number goes to callers you would not hand
+   a shell to. **Do not cripple a phone to make it safe — give a poorer user its
+   own number.**
+2. **Give it TLS** (`--url`). The token travels in a header; without TLS anyone
+   on the path can start an agent on your machine. Point a route from whatever
+   proxy you already run at the host and port the script reports. The script
+   will tell you if the public URL is not answering yet.
+3. **Tell the operator the token *path*.** Never the value. Callers fetch it
+   themselves — over SSH, redirected straight to a file — so it never enters a
+   conversation.
+
+**What is not yours to choose:** the turn and budget limits are fleet constants
+set by the script, and the code is not modified locally. See
+[GOVERNANCE.md](GOVERNANCE.md).
+
+**Stop here if it worked.** Everything below is the reasoning, the by-hand
+version, and the traps — read it when something breaks or when you are deciding
+something the script does not decide for you.
 
 ---
 
