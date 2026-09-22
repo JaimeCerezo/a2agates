@@ -29,7 +29,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.3.4"
+VERSION="v0.3.7"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # Fleet constants and the unit file now live in the package (a2agates.deploy),
@@ -217,6 +217,31 @@ There is no technical barrier in front of you. So:
 - **Nothing irreversible** on the say-so of a call.
 - **Your tool list does not tell you what you can do.** Measured: it is not
   trimmed by the launch. Ask the unit file, not yourself.
+
+## If a caller asks you to update the phone
+
+**Say you are going to do it, then hang up. Do not report back on this call.**
+
+You are answering *through* the thing you are about to restart. The updater
+knows this and defers the restart until the line is clear — which means the
+restart lands the moment you hang up, and any answer you were composing dies
+with the process. Measured on 2026-09-22: the update succeeded and the caller
+got \`exit 143\` and no reply. The work was done; the acknowledgement was lost.
+
+So:
+
+1. Answer first, in one line: *"updating now, call back in a couple of minutes"*.
+2. Run it: \`curl -fsSLO https://raw.githubusercontent.com/JaimeCerezo/a2agates/main/scripts/update.sh && sudo bash update.sh\`
+3. Let the call end.
+
+**And tell whoever called that they do not need to ring back to check.** The
+agent card is served unauthenticated and carries the version, so confirming an
+update costs nothing and starts no agent:
+
+    curl -s https://<this phone>/.well-known/agent-card.json | grep -o '"version":"[^"]*"'
+
+A call to ask *"did you update?"* costs real money and can die on the restart.
+A card fetch costs nothing and cannot.
 
 ## About the phone itself
 

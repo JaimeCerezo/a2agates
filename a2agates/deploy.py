@@ -104,7 +104,16 @@ ExecStart={venv}/bin/a2agates \\
     --full-permissions \\
     --max-turns ${{A2A_MAX_TURNS}} \\
     --max-budget ${{A2A_MAX_BUDGET}}
-Restart=on-failure
+# always, not on-failure. The listener ends with `return 0` after uvicorn, so
+# any clean shutdown that is not an exception exits ZERO -- and `on-failure`
+# does not consider zero a failure. The phone would stay dead with nothing in
+# any log to say why, because from systemd's side it finished correctly.
+#
+# `always` costs no control: systemd does not restart after an explicit
+# `systemctl stop`, whichever policy is set. What it adds is the case nobody
+# watches -- the quiet exit at 3am on a machine where the only sign is that
+# calls stop being answered.
+Restart=always
 RestartSec=5
 # NoNewPrivileges is deliberately absent: it would block the agent's own sudo,
 # which is half of what the phone is for. A phone that must not escalate is one

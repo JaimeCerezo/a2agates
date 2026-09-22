@@ -26,6 +26,23 @@ sudo bash update.sh            # every phone on this machine
 sudo bash update.sh --check    # look, change nothing
 ```
 
+> **If you are ordering an update over the phone: hang up, then call back.**
+> The agent you are talking to answers *through* the service it is about to
+> restart. The updater defers the restart until the line is clear, so it lands
+> the moment that agent hangs up — taking its reply with it. Measured on
+> 2026-09-22: the update succeeded and the caller got `exit 143` and no answer.
+> The work was done; only the acknowledgement was lost.
+>
+> And you rarely need to call back at all. **The agent card is unauthenticated
+> and carries the version**, so checking costs nothing and starts no agent:
+>
+> ```bash
+> curl -s https://<their phone>/.well-known/agent-card.json | grep -o '"version":"[^"]*"'
+> ```
+>
+> Asking *"did you update?"* costs a real call and can die on the restart.
+> Reading the card cannot.
+
 **The two halves do not arrive by the same road**, and knowing that saves a
 diagnosis. The script is fetched from `main`, so a fix in `scripts/update.sh`
 lands on the very next run, tagged or not. The package is installed with
@@ -460,7 +477,11 @@ ExecStart=/home/<user>/a2agates-venv/bin/a2agates \
     --full-permissions \
     --max-budget ${A2A_MAX_BUDGET} \
     --max-turns ${A2A_MAX_TURNS}
-Restart=on-failure
+# always, NOT on-failure. The listener ends with `return 0`, so a clean
+# shutdown exits zero and `on-failure` would leave the phone dead with
+# nothing in any log — from systemd's side it finished correctly. `always`
+# costs no control: an explicit `systemctl stop` is still respected.
+Restart=always
 RestartSec=5
 # NoNewPrivileges=true would block privilege escalation -- including this
 # agent's own sudo, which is half of what it is for. Left out on purpose. If
