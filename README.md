@@ -6,9 +6,10 @@
 [Claude Code](https://claude.com/claude-code) agent, so another agent can call
 it and get an answer — and gives that agent a way to place calls of its own.
 
-> **Status: prototype.** It works, it is measured, and it is not deployed
-> anywhere yet. Read [Security](#security) before you point it at anything you
-> care about. The model it is growing into is written down in
+> **Status: early, and in use.** It works, it is measured, and it carries real
+> traffic between two machines — which is a reason to read
+> [Security](#security) before you point it at anything you care about, not a
+> reason to skip it. The model it is growing into is written down in
 > [DESIGN.md](DESIGN.md), and parts of this README describe what exists rather
 > than what is decided.
 
@@ -67,7 +68,7 @@ user that will run the process.
 
 ```bash
 python3 -m venv ~/a2agates-venv
-~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.1.12"
+~/a2agates-venv/bin/pip install "git+https://github.com/JaimeCerezo/a2agates@v0.3.0"
 ```
 
 Pin a tag or a commit. A commit id is a hash of its content, so "install this
@@ -87,8 +88,21 @@ a2agates \
   --name "the agent's name" \
   --port 9110 \
   --public-url https://example.org/gw/agent/ \
-  --auth-token-file /path/to/token
+  --db /var/lib/a2agates/the-agent
 ```
+
+`--db` is required and is where the **callers** live: who may ring this phone,
+each with their own credential, origins and expiry. There is no other way in.
+A phone with an empty table refuses every call, which is the right state for
+one nobody has been introduced to yet — admit somebody deliberately:
+
+```bash
+sudo a2agates-admin --db /var/lib/a2agates/the-agent \
+     caller add ops --from 192.0.2.10/32 --days 365
+```
+
+The token is printed **once**. Write it to a `0600` file and hand over the
+**path**; only its hash is kept here.
 
 It binds to **`127.0.0.1` by default**, on purpose: put a reverse proxy in
 front for TLS, never open the port directly.
@@ -140,15 +154,20 @@ never run this.
 claude --mcp-config config.json --allowedTools "mcp__a2agates__ask_agent"
 ```
 
-`config.json` declares a `stdio` server and passes the destination through the
-environment (`A2A_FRIEND`, `A2A_URL`, `A2A_TOKEN_FILE`):
+`config.json` declares a `stdio` server pointed at the phone's own directory,
+and the contacts come from the table inside it. Write it with the tool rather
+than by hand — it keeps a backup of the file it touches:
+
+```bash
+sudo a2agates-admin --db /var/lib/a2agates/the-agent \
+     contact config --write ~/.claude.json
+```
 
 ```json
 {"mcpServers": {"a2agates": {
   "command": "/usr/local/bin/a2agates-mcp",
-  "env": {"A2A_FRIEND": "their-name",
-          "A2A_URL": "https://their-phone/",
-          "A2A_TOKEN_FILE": "/path/to/the/token"}}}}
+  "env": {"A2A_DB": "/var/lib/a2agates/the-agent",
+          "A2A_TIMEOUT": "420"}}}}
 ```
 
 > **Point at `/usr/local/bin/a2agates-mcp`, never into the venv.** An install
@@ -158,10 +177,13 @@ environment (`A2A_FRIEND`, `A2A_URL`, `A2A_TOKEN_FILE`):
 > answering. The install script keeps that symlink current across upgrades and
 > relocations so a contact list does not have to know where the code lives.
 
-Use `A2A_TOKEN_FILE` rather than `A2A_TOKEN`: a variable has to be written into
-a config file to get there and is readable in `/proc/<pid>/environ`, while a
-file can be handed over once by whoever holds the credential — fetched over SSH
-straight into place, never passing through a conversation.
+There used to be a second shape here — `A2A_FRIEND`, `A2A_URL`,
+`A2A_TOKEN_FILE`: one fixed destination in three environment variables. It is
+gone, and a machine still configured that way is told so with the command that
+fixes it rather than quietly working through the other path. Keeping both was
+how the two halves of one phone ended up on different mechanisms: the incoming
+side moved to the database when the unit gained `--db`, while the outgoing side
+sat in the user's own config, **which no update has ever touched**.
 
 ### It fails legibly, which matters as much as working
 
@@ -200,13 +222,24 @@ Deliberately, so the first version could be evaluated:
 - **It does not talk to a live tmux session.** This is the missing piece and the
   most valuable one.
 - **It does not decide awake/asleep.** It always starts a fresh agent.
-- The contact list is **environment variables**, there is **one token** for all
-  callers, and there is no origin check — that one has to sit in the reverse
-  proxy for now, which is the wrong place. All three are designed and unbuilt.
-- There is **no call log**. When the answering agent is capable on purpose, the
-  record is the only control left — see [DESIGN.md](DESIGN.md).
+- **The origin check leans on the proxy in front of it.** `allowed_from` is
+  enforced, but behind a reverse proxy the address comes from
+  `X-Forwarded-For`, and this code reads the **leftmost** entry — which is the
+  caller-controlled end whenever a proxy *appends* rather than replaces.
+
+  Measured on 2026-09-22 against Traefik v3.6: a forged
+  `X-Forwarded-For: 203.0.113.9` did **not** take — Traefik discards inbound
+  `X-Forwarded-*` from untrusted clients and sets its own, so the leftmost
+  entry was the real address and the call was attributed correctly. So this is
+  a latent bug rather than an open door *here*. It becomes a real one behind a
+  proxy that appends, or a Traefik with `forwardedHeaders.trustedIPs` set.
+  Until the listener takes the address from the end it can trust, treat the
+  CIDR as a second lock on a stolen token, not as proof of origin.
 - No card signing, no callback webhook, no socket activation, no cancelling a
   call in progress.
+- **The outbound token is still readable by the agent**: it sits in the
+  environment of a process the agent itself started. The daemon with its own
+  user, which is the fix, is designed and unbuilt — see [DESIGN.md](DESIGN.md).
 
 What *is* built, and verified rather than assumed:
 
@@ -218,10 +251,20 @@ What *is* built, and verified rather than assumed:
   bound anything, corrected on 2026-09-22 after measuring it: `--allowed-tools`
   only adds to what is auto-approved. It leaves every tool in the catalogue and
   read-only `Bash` still runs. To bar a tool you need `permissions.deny`.
-- **`--token-expires`**, enforced on every call. A past date refuses to start;
-  a 25-second expiry took the same call from 200 to `401 credential expired`.
-  That is what makes a short-lived credential safe to hand over in a channel
-  that keeps history.
+- **A credential per caller**, in the `callers` table: its own hash, origins,
+  expiry and revocation. Four checks — known, not revoked, not expired, right
+  address — and **all four fail with the same 401**, because saying which one
+  failed tells whoever is probing which part they got right.
+
+  The single shared token file that used to sit behind this is **gone as of
+  v0.3.0**, and not only because one token cannot be revoked for one caller.
+  It was also the switch that mounted authentication at all, so a phone
+  started without it answered *everyone*; it carried a phone-wide expiry that
+  refused to start the whole service long after the credential had stopped
+  being used; and the fallback to it was conditioned on there being an
+  unrevoked caller — so **revoking the last caller reopened the shared token**
+  rather than closing the line. Installing mints nothing now: a new phone has
+  both lists empty and answers nobody until a person admits a caller.
 
 ## Security
 

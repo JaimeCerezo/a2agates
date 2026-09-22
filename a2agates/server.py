@@ -151,7 +151,7 @@ def build_card(url: str, *, name: str, description: str, auth: bool) -> AgentCar
 
 
 # --------------------------------------------------------------------------
-# Authentication: no token, no entry
+# Authentication: the callers table, and nothing else
 # --------------------------------------------------------------------------
 class BearerAuth:
     """Require ``Authorization: Bearer <token>`` on everything but the card.
@@ -159,32 +159,44 @@ class BearerAuth:
     The card is served unauthenticated on purpose: a caller reads it to *find
     out* which credential it needs, before holding any.
 
-    If ``expires_at`` is given, every call after that instant is refused no
-    matter how correct the token is. That is what makes a short-lived
-    credential safe to hand over in a channel that keeps history -- a chat, a
-    ticket, a transcript. Without enforcement, an expiry date is a note, not a
-    property.
+    **There is exactly one place a credential can live: the ``callers`` table.**
+
+    Until v0.3.0 there was a second -- a single shared token in a file, kept as
+    a fallback so that a phone installed before the table existed would carry
+    on answering. It outlived its purpose and was three things wearing one hat,
+    each of which turned out to be a liability:
+
+      * **It was the switch that mounted this middleware at all.** A phone
+        started without the file did not merely lose the fallback; it answered
+        *everybody*, with no authentication whatsoever.
+      * **It carried a phone-wide expiry** which refused to start the entire
+        service -- enforced long after the credential itself had stopped being
+        used by anyone, so a machine would die on a date belonging to a token
+        nobody had presented in a month.
+      * **And the fallback was conditioned on there being an unrevoked
+        caller**, so revoking the last caller did not close the door: it
+        silently reopened the shared token, which was still sitting on disk
+        with its original value. Revocation has to close, not step backwards.
+
+    Found on 2026-09-22, which is why the file is gone rather than deprecated.
+
+    Now: no row, no entry. An empty table is a phone that refuses every call --
+    the correct posture for a phone nobody has been admitted to yet. Expiry is
+    per caller, in ``callers.expires_at``, where it belongs, and revoking the
+    last caller leaves nothing behind it.
     """
 
     def __init__(
         self,
         app,
         *,
-        token: str,
-        expires_at: datetime | None = None,
         log_db: str | None = None,
         callers_db: str | None = None,
     ) -> None:
         self.app = app
-        self._token = token.strip().encode()
-        self._expires_at = expires_at
-        # The registered callers, when there are any. The single token stays as
-        # the fallback so that a phone installed before this existed keeps
-        # answering: an upgrade that silently stops accepting the credential
-        # everyone already holds is not an upgrade.
         self._callers_db = callers_db
-        # Refused calls are the security-relevant rows, and until now they left
-        # no trace anywhere at all.
+        # Refused calls are the security-relevant rows, and until v0.1.20 they
+        # left no trace anywhere at all.
         self._log_db = log_db
 
     def _refused(self, scope, outcome: str, presented: bytes) -> None:
@@ -210,12 +222,6 @@ class BearerAuth:
             finished_at=now,
         )
 
-    def _expired(self) -> bool:
-        return (
-            self._expires_at is not None
-            and datetime.now(timezone.utc) >= self._expires_at
-        )
-
     async def __call__(self, scope, receive, send) -> None:
         path = scope.get("path", "")
         if scope["type"] != "http" or path.startswith("/.well-known/"):
@@ -231,45 +237,36 @@ class BearerAuth:
         parts = presented.split(None, 1)
         bearer = parts[1].strip() if len(parts) == 2 and parts[0].lower() == b"bearer" else b""
 
-        # Registered callers first: a hash match gives a NAME, which is what
-        # the log has been missing and what makes revoking one caller possible
-        # without breaking the others.
-        caller = None
-        if bearer and self._callers_db and callers_mod.count(self._callers_db):
-            addr, _ = _caller_address(scope)
-            caller = callers_mod.identify(self._callers_db, bearer, addr)
-            if caller is None:
-                # Deliberately the same refusal as an unknown token. Saying
-                # *which* check failed -- unknown, revoked, expired, wrong
-                # address -- tells whoever is probing which part they got
-                # right.
-                self._refused(scope, "auth_failed", bearer)
-                await _refuse(send, b'{"error":"unauthorized"}')
-                return
-            _who.set(caller["alias"])
-            log.info("call from caller=%s scope=%s", caller["alias"], caller["scope"])
-            await self.app(scope, receive, send)
+        # One question, asked once: does this credential belong to a caller who
+        # may ring from here, right now? A hash match gives a NAME, which is
+        # what makes the log attribution and what makes revoking one caller
+        # possible without breaking the others.
+        #
+        # Note there is no `count()` here any more. It used to gate the
+        # fallback, and gating anything on "are there unrevoked callers" is how
+        # revoking the last one reopened the shared token.
+        address = _caller_address(scope)
+        caller = (
+            callers_mod.identify(self._callers_db, bearer, address[0])
+            if bearer and self._callers_db
+            else None
+        )
+        if caller is None:
+            # Deliberately the same refusal whatever failed -- nothing
+            # presented, unknown, revoked, expired, or the wrong address.
+            # Saying *which* check failed tells whoever is probing which part
+            # they got right.
+            self._refused(scope, "auth_failed", bearer)
+            await _refuse(send, b'{"error":"unauthorized"}')
             return
 
-        ok = bool(bearer) and hmac.compare_digest(bearer, self._token)
-
-        # Checked after the token, deliberately: saying "expired" to someone
-        # who never held the credential would confirm that a credential
-        # exists. Said to whoever does hold it, it is plain usefulness -- they
-        # get told why, instead of debugging a silent refusal.
-        if ok and self._expired():
-            log.warning("expired credential presented (expiry %s)", self._expires_at)
-            self._refused(scope, "auth_expired", parts[1].strip() if len(parts) == 2 else b"")
-            await _refuse(send, b'{"error":"credential expired"}')
-            return
-
-        if ok:
-            _remote.set(_caller_address(scope))
-            await self.app(scope, receive, send)
-            return
-
-        self._refused(scope, "auth_failed", parts[1].strip() if len(parts) == 2 else b"")
-        await _refuse(send, b'{"error":"unauthorized"}')
+        _who.set(caller["alias"])
+        # And the address, which this branch used to drop on the floor: the
+        # single-token path recorded it and the named path did not, so the log
+        # held an address for everyone *except* the callers it could name.
+        _remote.set(address)
+        log.info("call from caller=%s scope=%s", caller["alias"], caller["scope"])
+        await self.app(scope, receive, send)
 
 
 async def _refuse(send, body: bytes) -> None:
@@ -648,15 +645,6 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Address advertised on the card. Defaults to where it listens.",
     )
-    ap.add_argument("--auth-token-file", default=None)
-    ap.add_argument(
-        "--token-expires",
-        default=None,
-        help="Instant after which the token stops working, ISO-8601 "
-        "(2026-09-22T21:00:00Z). Naive values are read as UTC. This is what "
-        "makes a short-lived credential safe to hand over in a channel that "
-        "keeps history.",
-    )
     ap.add_argument("--claude", default="claude", help="Path to the claude to use.")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument(
@@ -695,11 +683,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--db",
-        default=None,
+        required=True,
         metavar="DIR",
-        help="Directory holding this phone's databases (callers.db, "
-        "contacts.db). Created if missing. Without it the phone works exactly "
-        "as before but keeps no record of who called or how it went.",
+        help="Directory holding this phone's database. Created if missing. "
+        "REQUIRED: this is where the callers live, so without it there is no "
+        "credential that could ever be accepted -- and no record of who "
+        "called. It was optional until v0.3.0, when the single token file it "
+        "used to fall back to was removed.",
     )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -714,28 +704,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: no such folder: {cwd}", file=sys.stderr)
         return 2
 
-    token = None
-    if args.auth_token_file:
-        token = Path(args.auth_token_file).read_text(encoding="utf-8").strip()
-        if not token:
-            print("error: the token file is empty", file=sys.stderr)
-            return 2
-
-    expires_at = None
-    if args.token_expires:
-        try:
-            expires_at = datetime.fromisoformat(args.token_expires.replace("Z", "+00:00"))
-        except ValueError:
-            print(f"error: unreadable --token-expires: {args.token_expires}", file=sys.stderr)
-            return 2
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at <= datetime.now(timezone.utc):
-            # Refusing to start beats starting and rejecting everything: the
-            # failure is visible now, not at the first call nobody is watching.
-            print(f"error: --token-expires is already past ({expires_at})", file=sys.stderr)
-            return 2
-
     url = args.public_url or f"http://{args.host}:{args.port}/"
     if not url.endswith("/"):
         url += "/"
@@ -746,22 +714,22 @@ def main(argv: list[str] | None = None) -> int:
         name=name,
         description=args.description
         or f"Agent for project {name}, reachable over A2A.",
-        auth=token is not None,
+        auth=True,
     )
 
-    log_db = callers_db = None
-    if args.db:
-        log_db = callers_db = str(db.init(args.db))
-        # Said at startup rather than left to be discovered. A call that
-        # started and never closed is the trace of one that was killed
-        # halfway -- and if this phone can write, halfway may mean a commit
-        # without a push, or a deploy without either.
-        stranded = db.unfinished(log_db)
-        if stranded:
-            print(f"  NOTE: {len(stranded)} call(s) started and never finished:")
-            for r in stranded[:5]:
-                print(f"    {r['started_at']}  {(r['request_excerpt'] or '')[:60]}")
-            print("    Look at what they left before assuming the machine is clean.")
+    log_db = callers_db = str(db.init(args.db))
+    registered = callers_mod.count(callers_db)
+
+    # Said at startup rather than left to be discovered. A call that started
+    # and never closed is the trace of one that was killed halfway -- and if
+    # this phone can write, halfway may mean a commit without a push, or a
+    # deploy without either.
+    stranded = db.unfinished(log_db)
+    if stranded:
+        print(f"  NOTE: {len(stranded)} call(s) started and never finished:")
+        for r in stranded[:5]:
+            print(f"    {r['started_at']}  {(r['request_excerpt'] or '')[:60]}")
+        print("    Look at what they left before assuming the machine is clean.")
 
     engine = LocalClaude(
         cwd=str(cwd),
@@ -781,34 +749,41 @@ def main(argv: list[str] | None = None) -> int:
         *create_agent_card_routes(card),
         *create_jsonrpc_routes(handler, rpc_url="/"),
     ]
-    middleware = (
-        [Middleware(BearerAuth, token=token, expires_at=expires_at,
-                    log_db=log_db, callers_db=callers_db)]
-        if token
-        else None
-    )
+    # Always. There is no longer any argument that can leave a phone
+    # unauthenticated -- which was the real danger of the token file: it was
+    # the switch, so forgetting it opened the line instead of closing it.
+    middleware = [Middleware(BearerAuth, log_db=log_db, callers_db=callers_db)]
     app = Starlette(routes=routes, middleware=middleware)
 
     print(
         f"a2agates {__version__}: agent={name} folder={cwd}\n"
         f"  listening on http://{args.host}:{args.port}/\n"
         f"  card advertises {url}\n"
-        f"  authentication: {'token required' if token else 'OPEN'}\n"
-        f"  callers: {callers_mod.count(callers_db) if callers_db else 0} registered"
-        f"{' (falling back to the single token file)' if not (callers_db and callers_mod.count(callers_db)) else ''}\n"
+        f"  callers: {registered} registered, each with its own expiry and origins\n"
         f"  auto-approved tools: {args.allowed_tools or 'the defaults'}\n"
         f"  permissions: "
         f"{'FULL -- every caller acts as this user' if args.full_permissions else 'prompted, so nothing that needs approval can run'}\n"
-        f"  token expires: {expires_at.isoformat() if expires_at else 'never'}\n"
         f"  budget per call: "
         f"{('$' + str(args.max_budget)) if args.max_budget else 'UNCAPPED'}"
     )
-    if token is None:
+    if not registered:
+        # Not an error: a phone with nobody admitted yet is a normal state, and
+        # it fails closed. But it answers 401 to everything, and somebody
+        # debugging that from the far end cannot see this machine -- so say it
+        # here, where it is cheap, instead of letting them find out by being
+        # refused.
         print(
-            "  warning: running without a token. Anyone who can reach this port\n"
-            "           can run your agent. Do not do this outside a test box.",
+            "  note: nobody is registered, so this phone will refuse every call.\n"
+            "        Admit a caller with:\n"
+            f"          sudo a2agates-admin --db {args.db} caller add <name> \\\n"
+            "               --from <CIDR> --days 365",
             file=sys.stderr,
         )
+    # Callers admitted from anywhere, named out loud. An absurdly wide range
+    # written out of convenience looks identical to a considered decision in
+    # the table, and only one of the two is worth a line at every startup.
+    for alias in callers_mod.open_origin(callers_db):
+        print(f"  warning: caller «{alias}» accepts calls from any origin", file=sys.stderr)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
 

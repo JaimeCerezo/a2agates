@@ -961,16 +961,37 @@ Already built, so the rest can be read against it:
 - **A runaway bounded** — `--max-turns` and `--max-budget`. What was written
   here before, and is false: that `--allowed-tools` made a scope reach the
   launch. It does not bind. See the correction above.
-- **Expiry enforced** — `--token-expires`. Verified both ways: a past date
-  refuses to start, and a 25-second expiry took the same call from 200 to
-  `401 credential expired`.
+- **Expiry enforced**, per caller, in `callers.expires_at`. Verified both ways
+  on the phone-wide flag it replaced: a past date refused to start, and a
+  25-second expiry took the same call from 200 to a refusal.
+
+  The phone-wide version (`--token-expires`, with the shared token file it
+  belonged to) is **gone in v0.3.0**. It expired a credential rather than an
+  access, so it went on being enforced after the table had taken over — and
+  since a past date refuses to start the service, a machine could be killed by
+  a deadline belonging to a token nobody had presented in weeks. An expiry
+  belongs to the caller it admits, next to the origins it admits them from.
 
 Still missing:
 
-- The command line tool and the databases, which do not exist yet.
-- **Multiple tokens on the ear.** Today it reads one file and compares against a
-  single string, so there is no token per pair and the log cannot say *who*
-  called.
+- ~~The command line tool and the databases.~~ **Built**: `a2agates-admin`
+  against one `phone.db` per phone.
+- ~~**Multiple tokens on the ear.**~~ **Built, and the single one removed
+  entirely in v0.3.0.** A credential per caller, each with its own origins,
+  expiry and revocation, so the log can say *who* called.
+
+  Keeping the old shared token as a fallback for a while looked like
+  kindness — an upgrade that stops accepting the credential everyone holds is
+  not an upgrade — and it was a mistake worth recording, because the harm was
+  not the extra code path. It was that **the fallback was conditioned on the
+  table having an unrevoked caller**, so revoking the last one did not close
+  the line: it stepped backwards onto a credential that was still sitting on
+  disk. A safety net attached to the thing it is meant to catch.
+
+  The general shape, which is worth carrying to the next deprecation: a
+  fallback that triggers on *absence* inverts the meaning of removing the
+  last item. If removal is supposed to mean "closed", nothing may treat empty
+  as "not configured yet".
 - ~~**The call log.**~~ **Built in v0.1.20.** The argument above promoted it
   from useful to necessary — when the agent is powerful on purpose, the record
   is the only control left — but the reason it got built first was narrower and

@@ -57,6 +57,16 @@ COMMANDS = ("a2agates", "a2agates-mcp", "a2agates-admin", "a2agates-note", "a2ag
 BINDIR = "/usr/local/bin"
 MAILBOX = f"{STATE}/mailbox.md"
 
+# Settings that no longer mean anything, removed from every .env on update.
+#
+# The single shared token and its phone-wide expiry, both gone in v0.3.0.
+# Leaving them would not be harmless: a machine whose .env still names a token
+# file is a machine where somebody eventually restores the file and wonders why
+# it does nothing -- or worse, where the expiry date is read as if it still
+# governed anything. An update is exactly where a retired setting should
+# disappear, for the same reason the limits are rewritten rather than merged.
+RETIRED = ("A2A_TOKEN_FILE", "A2A_TOKEN_EXPIRES")
+
 UNIT = """\
 [Unit]
 Description=a2agates phone (%i)
@@ -75,12 +85,10 @@ ExecStart={venv}/bin/a2agates \\
     --host ${{A2A_HOST}} \\
     --port ${{A2A_PORT}} \\
     --public-url ${{A2A_PUBLIC_URL}} \\
-    --auth-token-file ${{A2A_TOKEN_FILE}} \\
     --db ${{A2A_DB}} \\
     --full-permissions \\
     --max-turns ${{A2A_MAX_TURNS}} \\
-    --max-budget ${{A2A_MAX_BUDGET}} \\
-    --token-expires ${{A2A_TOKEN_EXPIRES}}
+    --max-budget ${{A2A_MAX_BUDGET}}
 Restart=on-failure
 RestartSec=5
 # NoNewPrivileges is deliberately absent: it would block the agent's own sudo,
@@ -94,6 +102,33 @@ WantedBy=multi-user.target
 
 def unit_text(user: str) -> str:
     return UNIT.format(user=user, etc=ETC, venv=VENV)
+
+
+def _retire_token_file(path: str, changed: list[str]) -> None:
+    """Destroy the retired shared token, rather than leaving it on disk.
+
+    Deliberately a delete and not a rename, which is the opposite of what
+    :func:`a2agates.db._absorb` does with a superseded database -- and the
+    difference is the point. A migrated database is *evidence*, worth keeping
+    so the migration can be checked afterwards. A retired credential is a
+    *liability*: its whole value to an attacker survives being renamed, and
+    nobody ever needs to read it again.
+
+    It is already inert by the time this runs -- the ear stopped accepting it
+    the moment this version was installed -- so this removes the object, not
+    the access.
+    """
+    import os
+
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        os.remove(path)
+        changed.append(f"retired shared token {path}")
+    except OSError:
+        # Said rather than swallowed: a token that could not be deleted is
+        # exactly the one somebody has to go and delete by hand.
+        changed.append(f"COULD NOT DELETE the retired token at {path} -- remove it yourself")
 
 
 def converge(user: str | None = None) -> list[str]:
@@ -181,6 +216,15 @@ def converge(user: str | None = None) -> list[str]:
             out, seen, dirty = [], set(), False
             for line in lines:
                 key = line.split("=", 1)[0]
+                if key in RETIRED:
+                    # The single shared token, gone in v0.3.0. Its settings are
+                    # stripped rather than left lying around: a dead credential
+                    # that is still named in a config file is one somebody will
+                    # eventually try to use, or restore.
+                    dirty = True
+                    if key == "A2A_TOKEN_FILE":
+                        _retire_token_file(line.split("=", 1)[-1].strip(), changed)
+                    continue
                 if key in wanted_pairs:
                     seen.add(key)
                     new = f"{key}={wanted_pairs[key]}"

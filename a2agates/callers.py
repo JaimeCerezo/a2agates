@@ -92,7 +92,14 @@ def address_allowed(address: str | None, allowed_from: str) -> bool:
 
 
 def count(db: str | Path) -> int:
-    """How many callers are registered. Zero means fall back to the old file."""
+    """How many callers are admitted. Zero is a phone that refuses every call.
+
+    Used for the startup banner only. It used to gate the fallback to the old
+    single-token file, and *that* is what made revoking the last caller reopen
+    the shared token instead of closing the line. Nothing in the request path
+    asks this question any more: :func:`identify` either finds a row or does
+    not.
+    """
     try:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as c:
             return c.execute(
@@ -100,6 +107,27 @@ def count(db: str | Path) -> int:
             ).fetchone()[0]
     except sqlite3.Error:
         return 0
+
+
+def open_origin(db: str | Path) -> list[str]:
+    """Admitted callers that may ring from anywhere.
+
+    Said out loud at every startup, because ``0.0.0.0/0`` is a legitimate
+    answer and an unconsidered one look exactly alike in the table. The banner
+    is the one place the difference can still be noticed.
+    """
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as c:
+            rows = c.execute(
+                "SELECT alias, allowed_from FROM callers WHERE revoked_at IS NULL"
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [
+        alias
+        for alias, allowed in rows
+        if any(n.strip() in ("0.0.0.0/0", "::/0") for n in (allowed or "").split(","))
+    ]
 
 
 def identify(db: str | Path, token: bytes | str, address: str | None) -> dict | None:

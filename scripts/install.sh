@@ -11,8 +11,10 @@
 # for what genuinely differs between machines: the phone's name, its public URL
 # and which user answers.
 #
-# Idempotent on purpose. Run it again to update: it reuses the token, the phone
-# folder and anything already in place, and only changes what has moved.
+# Idempotent on purpose. Run it again to update: it reuses the phone folder, the
+# callers and contacts already admitted, and anything else in place, and only
+# changes what has moved. It mints no credential of its own -- a fresh phone has
+# both lists empty and answers nobody until a person admits a caller.
 #
 #   curl -fsSLO https://raw.githubusercontent.com/JaimeCerezo/a2agates/main/scripts/install.sh
 #   sudo bash install.sh --name myagent --url https://phone.example.org/ --user agentuser
@@ -21,7 +23,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.2.3"
+VERSION="v0.3.0"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # Fleet constants and the unit file now live in the package (a2agates.deploy),
@@ -85,14 +87,12 @@ case "$URL" in https://*) ;; *) die "--url must be https. The token travels in a
 id "$USER_" >/dev/null 2>&1 || die "user '$USER_' does not exist."
 [ "${URL%/}" = "$URL" ] && URL="$URL/"
 
-# An existing phone keeps its folder and its credential. Re-running the script
-# is how a machine is updated, and an update that relocates the project or
-# mints a new token would break every caller that already has the old one --
-# which is the opposite of what "run it again" should mean.
+# An existing phone keeps its folder. Re-running the script is how a machine is
+# updated, and an update that relocated the project would be the opposite of
+# what "run it again" should mean.
 EXISTING="$ETC/$NAME.env"
 if [ -f "$EXISTING" ]; then
     [ -n "$CWD" ] || CWD=$(grep -oP '^A2A_CWD=\K.*' "$EXISTING" 2>/dev/null || true)
-    KEEP_TOKEN=$(grep -oP '^A2A_TOKEN_FILE=\K.*' "$EXISTING" 2>/dev/null || true)
 fi
 [ -n "$CWD" ] || CWD="/srv/a2agates/phone-$NAME"
 
@@ -186,29 +186,22 @@ EOF
     chown "$USER_:$USER_" "$CWD/CLAUDE.md"
 fi
 
-# --- the credential --------------------------------------------------------
-install -d -m 755 "$ETC"
-TOKEN_FILE="${KEEP_TOKEN:-$ETC/$NAME.token}"
-if [ ! -f "$TOKEN_FILE" ]; then
-    info "minting a token"
-    "$VENV/bin/python" -P -c 'import secrets,sys;sys.stdout.write(secrets.token_urlsafe(32))' > "$TOKEN_FILE"
-    chown "$USER_:$USER_" "$TOKEN_FILE"; chmod 600 "$TOKEN_FILE"
-    NEW_TOKEN=yes
-else
-    info "keeping the existing token"
-fi
-
-# Expiry: one year out, so a phone does not silently die mid-project. Rotate it
-# deliberately, not by letting it lapse.
-EXPIRES=$(date -u -d '+365 days' +%Y-%m-%dT%H:%M:%SZ)
-
 # --- configuration ---------------------------------------------------------
+# No credential is minted here, and that is the change of v0.3.0.
+#
+# Installing used to mint a shared token nobody had asked for, which then had
+# to be carried, protected and eventually rotated -- a secret created by the
+# act of installing rather than by anyone deciding to admit a caller. A fresh
+# phone now has both lists empty: nobody can call it and it can call nobody,
+# which is the honest state of a phone that has not been introduced to anyone
+# yet. Credentials appear when a person admits a caller, one at a time:
+#
+#   sudo a2agates-admin --db /var/lib/a2agates/<name> caller add <who> --from <CIDR>
+#
 # Rewritten on every run, on purpose: the limits are fleet constants and an
 # update is how a machine that drifted comes back into line.
+install -d -m 755 "$ETC"
 ENV_FILE="$ETC/$NAME.env"
-if [ -f "$ENV_FILE" ]; then
-    EXPIRES=$(grep -oP '^A2A_TOKEN_EXPIRES=\K.*' "$ENV_FILE" 2>/dev/null || echo "$EXPIRES")
-fi
 cat > "$ENV_FILE" <<EOF
 # Written by a2agates install.sh -- re-run it rather than editing by hand.
 # MAX_TURNS and MAX_BUDGET are fleet constants: same on every phone, so that
@@ -218,11 +211,9 @@ A2A_NAME=$NAME
 A2A_HOST=$HOST
 A2A_PORT=$PORT
 A2A_PUBLIC_URL=$URL
-A2A_TOKEN_FILE=$TOKEN_FILE
 A2A_DB=$STATE/$NAME
 A2A_MAX_TURNS=$MAX_TURNS
 A2A_MAX_BUDGET=$MAX_BUDGET
-A2A_TOKEN_EXPIRES=$EXPIRES
 EOF
 chmod 644 "$ENV_FILE"
 
@@ -292,10 +283,20 @@ else
 fi
 
 echo
+registered=$("$VENV/bin/python" -P -c \
+    "from a2agates import callers; print(callers.count('$STATE/$NAME/phone.db'))" 2>/dev/null || echo 0)
+
 echo "  phone:  $NAME ($got), answering as $USER_"
 echo "  limits: $MAX_TURNS turns, \$$MAX_BUDGET per call   [fleet constants]"
-echo "  token:  $TOKEN_FILE   (expires $EXPIRES)"
-[ "${NEW_TOKEN:-}" = yes ] && echo "          NEW. Give callers the PATH and let them fetch it; never paste the value."
+echo "  admitted: $registered caller(s)"
+if [ "${registered:-0}" -eq 0 ]; then
+    echo "          Nobody yet, so it refuses every call. That is the correct"
+    echo "          state for a phone nobody has been introduced to. To admit one:"
+    echo "            sudo a2agates-admin --db $STATE/$NAME caller add <who> \\"
+    echo "                 --from <CIDR> --days 365"
+    echo "          The token is printed ONCE. Write it to a 0600 file and give"
+    echo "          the other end the PATH; never paste the value anywhere."
+fi
 echo "  dial:   /usr/local/bin/a2agates-mcp   <- point contacts here, never at the venv"
 echo "  update: sudo bash update.sh"
 echo

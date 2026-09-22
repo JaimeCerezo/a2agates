@@ -32,9 +32,11 @@ left:
    on the path can start an agent on your machine. Point a route from whatever
    proxy you already run at the host and port the script reports. The script
    will tell you if the public URL is not answering yet.
-3. **Tell the operator the token *path*.** Never the value. Callers fetch it
-   themselves — over SSH, redirected straight to a file — so it never enters a
-   conversation.
+3. **Admit the callers.** The script mints no credential — a fresh phone
+   refuses everybody until a person runs `a2agates-admin caller add`, one
+   caller at a time, each with its own origins and expiry (§4). Hand over the
+   token's **path**, never its value: callers fetch it over SSH, redirected
+   straight to a file, so it never enters a conversation.
 
 **What is not yours to choose:** the turn and budget limits are fleet constants
 set by the script, and the code is not modified locally. See
@@ -320,29 +322,60 @@ agent can *fetch*, not what it was already given.
 
 ---
 
-## 4. Mint the token
+## 4. Admit a caller
+
+**Installing mints nothing.** A fresh phone has both lists empty: nobody can
+call it and it can call nobody. That is the honest state of a phone that has
+not been introduced to anyone, and it fails closed — every call gets a 401
+until somebody is admitted.
+
+Credentials appear one at a time, when a person decides to let someone in:
 
 ```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+sudo a2agates-admin --db /var/lib/a2agates/<name> caller add <who> \
+     --from 192.0.2.10/32 --days 365 \
+     --note "who this is and when you gave it to them"
 ```
 
-Put it in a file that only the listener's user can read, **outside any
-repository**:
+`--from` is required on purpose. `0.0.0.0/0` is a valid answer, but it has to
+be written out, so that *"from anywhere"* is a decision somebody made rather
+than a field nobody filled in. The listener names those callers at every
+startup, so an over-wide range cannot stay quiet.
 
-```bash
-install -m 600 /dev/null ~/.a2agates-token
-# paste the value into it with an editor, or redirect the command above
-```
-
-Rules that matter more than they look:
+The token is printed **once**; only its hash is stored. Rules that matter more
+than they look:
 
 - **Never write it into a file that git tracks.** Deleting the commit does not
   help; the history is forever and the only fix is a new token.
 - **Never repeat it in your own answers.** Anything you write stays in your
-  transcript, unprotected and without an expiry.
-- **Give it an expiry.** `--token-expires` is enforced on every call. 24 hours
-  is right for a first test, and it is what makes the credential safe to hand
-  over in a channel that keeps history.
+  transcript, unprotected and without an expiry. Write it to a `0600` file and
+  give the other end the **path** — they fetch it over SSH, redirected
+  straight into place, and it never passes through a conversation.
+- **Give it an expiry** with `--days`. It is enforced on every call, which is
+  what makes a short-lived credential safe to hand over at all.
+
+> **Who runs this.** Adding a *new* caller is a person's job: an agent can be
+> talked into opening the door by something it reads, and a permission prompt
+> would be asked of an empty room. **Rotating** the credential of a caller
+> that is already documented may be done by an agent — the door is not being
+> opened, only its lock changed for somebody already listed.
+
+### There is no shared token, and that is deliberate
+
+Until v0.3.0 the installer minted one, and it was three things at once. Each
+was a liability, and the third is the one that decided it:
+
+- **It was the switch that mounted authentication.** A phone started without
+  the file did not lose a fallback — it answered *everyone*.
+- **It carried a phone-wide expiry** that refused to start the whole service,
+  enforced long after the credential had stopped being used by anybody.
+- **The fallback to it was conditioned on there being an unrevoked caller**,
+  so revoking the last caller did not close the door: it silently reopened the
+  shared token, still on disk with its original value.
+
+If you are updating a machine that had one, `update.sh` strips both settings
+from its `.env` and **deletes the token file**. It is already inert by then —
+the listener stopped accepting it the moment the new version was installed.
 
 ---
 
@@ -383,11 +416,10 @@ ExecStart=/home/<user>/a2agates-venv/bin/a2agates \
     --host ${A2A_HOST} \
     --port ${A2A_PORT} \
     --public-url ${A2A_PUBLIC_URL} \
-    --auth-token-file ${A2A_TOKEN_FILE} \
+    --db ${A2A_DB} \
     --full-permissions \
     --max-budget ${A2A_MAX_BUDGET} \
-    --max-turns ${A2A_MAX_TURNS} \
-    --token-expires ${A2A_TOKEN_EXPIRES}
+    --max-turns ${A2A_MAX_TURNS}
 Restart=on-failure
 RestartSec=5
 # NoNewPrivileges=true would block privilege escalation -- including this
@@ -519,8 +551,8 @@ All four, in order. Each one catches a different mistake.
 #    PUBLIC address -- not the bind address.
 curl -s https://<name>/.well-known/agent-card.json
 
-# 2. No token -> 401. If this returns 200, the listener started without a
-#    token file and anyone can run your agent.
+# 2. No token -> 401. This also passes on a phone nobody is admitted to yet,
+#    which is correct: an empty callers table refuses everybody.
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://<name>/ \
   -H 'A2A-Version: 1.0' -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"role":"ROLE_USER","parts":[{"text":"x"}],"messageId":"1"}}}'
@@ -601,8 +633,8 @@ journalctl -u a2agates@<name> -n 50 --no-pager
 | Symptom | Usually |
 |---|---|
 | `403` | The caller's address is not the one you allowed |
-| `401 unauthorized` | Token mismatch |
-| `401 credential expired` | Past `--token-expires` |
+| `401 unauthorized` | Any of the four caller checks: unknown token, revoked, expired, or calling from an address outside its `--from`. **They are deliberately indistinguishable** — check with `a2agates-admin caller list`, not by guessing |
+| `401` on a brand new phone | Nobody admitted yet. `caller add` |
 | Card shows `127.0.0.1` | `--public-url` not set |
 | Certificate fails | The name did not resolve when the route went live |
 | Proxy cannot connect | Bound to `127.0.0.1` while the proxy is in a container, or the firewall |
