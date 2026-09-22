@@ -29,7 +29,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.3.2"
+VERSION="v0.3.3"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # Fleet constants and the unit file now live in the package (a2agates.deploy),
@@ -80,7 +80,11 @@ while [ $# -gt 0 ]; do
         --knows)   KNOWS="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
         -h|--help)
-            sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+            # The whole header block, however long it grows. It used to be a
+            # fixed `sed -n '2,25p'`, which silently started cutting the last
+            # paragraph in half the moment the header gained a line -- and the
+            # line it cut was the one documenting the flag that release added.
+            awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"
             exit 0 ;;
         *) die "unknown option: $1" ;;
     esac
