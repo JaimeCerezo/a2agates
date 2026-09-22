@@ -21,7 +21,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.31"
+VERSION="v0.1.32"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # Fleet constants and the unit file now live in the package (a2agates.deploy),
@@ -33,6 +33,28 @@ PREFIX=/opt/a2agates
 VENV="$PREFIX/venv"
 ETC=/etc/a2agates
 UNIT=/etc/systemd/system/a2agates@.service
+
+
+# Which version to install. The constant below is a floor, not the answer:
+# raw.githubusercontent serves a cached copy of this script for a few minutes
+# after a release, so whoever downloads it right after a tag lands gets the
+# PREVIOUS script -- carrying the previous version number, and silently
+# installing software older than the one they asked for. It bit twice on
+# 2026-09-22, once badly enough to mint a token that broke a live line.
+#
+# So the script stops being the source of that answer. `git ls-remote` asks the
+# repository directly, which no CDN sits in front of, and the newest tag wins.
+# A copy of this script from any date installs the current release.
+resolve_version() {
+    local latest
+    latest=$(git ls-remote --tags --refs "$REPO" 2>/dev/null \
+             | sed 's#.*/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+             | sort -V | tail -1)
+    if [ -n "$latest" ]; then
+        [ "$latest" != "$VERSION" ] && echo "  latest release is $latest (this script shipped with $VERSION)"
+        VERSION="$latest"
+    fi
+}
 
 NAME=""; URL=""; USER_=""; CWD=""; HOST=""; PORT=9110
 
@@ -74,6 +96,7 @@ if [ -f "$EXISTING" ]; then
 fi
 [ -n "$CWD" ] || CWD="/srv/a2agates/phone-$NAME"
 
+resolve_version
 echo "a2agates $VERSION -> phone '$NAME', answering as '$USER_'"
 
 # --- where to bind ---------------------------------------------------------

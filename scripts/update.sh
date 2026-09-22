@@ -15,11 +15,33 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.31"
+VERSION="v0.1.32"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
 UNIT=/etc/systemd/system/a2agates@.service
+
+
+# Which version to install. The constant below is a floor, not the answer:
+# raw.githubusercontent serves a cached copy of this script for a few minutes
+# after a release, so whoever downloads it right after a tag lands gets the
+# PREVIOUS script -- carrying the previous version number, and silently
+# installing software older than the one they asked for. It bit twice on
+# 2026-09-22, once badly enough to mint a token that broke a live line.
+#
+# So the script stops being the source of that answer. `git ls-remote` asks the
+# repository directly, which no CDN sits in front of, and the newest tag wins.
+# A copy of this script from any date installs the current release.
+resolve_version() {
+    local latest
+    latest=$(git ls-remote --tags --refs "$REPO" 2>/dev/null \
+             | sed 's#.*/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+             | sort -V | tail -1)
+    if [ -n "$latest" ]; then
+        [ "$latest" != "$VERSION" ] && echo "  latest release is $latest (this script shipped with $VERSION)"
+        VERSION="$latest"
+    fi
+}
 
 CHECK=no
 [ "${1:-}" = "--check" ] && CHECK=yes
@@ -35,6 +57,7 @@ die() { echo "a2agates: $*" >&2; exit 1; }
 # the wrong tree and the integrity check below verified the source against
 # itself and passed. An integrity check you can fool by cd'ing somewhere is
 # worse than none, because it reports "clean".
+resolve_version
 have=$("$VENV/bin/python" -P -c 'import a2agates;print(a2agates.__version__)' 2>/dev/null || echo "?")
 echo "a2agates: installed $have, current ${VERSION#v}"
 
