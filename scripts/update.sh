@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.30"
+VERSION="v0.1.31"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
