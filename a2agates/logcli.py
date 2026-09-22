@@ -36,7 +36,10 @@ def _phone_dir(name: str | None) -> Path:
 def _show(r: sqlite3.Row) -> None:
     state = r["outcome"] or "UNFINISHED"
     cost = f"{r['cost_usd']:.4f}" if r["cost_usd"] is not None else "-"
-    who = r["caller"] or r["remote_addr"] or "?"
+    # Who the other end was, and it lives in a different column each way:
+    # an inbound row knows the caller, an outbound row knows the peer it rang.
+    who = (r["peer"] if r["direction"] == "out"
+           else r["caller"] or r["remote_addr"]) or "?"
     via = f" via {r['via']}" if r["via"] else ""
     print(f"{r['started_at']}  {r['direction']:3} {state:24} {cost:>8}  {who}{via}")
     if r["request_excerpt"]:
