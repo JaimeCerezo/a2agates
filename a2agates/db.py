@@ -103,7 +103,15 @@ CREATE TABLE IF NOT EXISTS calls (
   peer            TEXT,              -- who answered, or who called
   caller          TEXT,              -- callers.alias once that table is in use.
                                      -- NULL is the single-token era, and says so
-  remote_addr     TEXT,
+  remote_addr     TEXT,              -- the caller, as best we can know it:
+                                     -- the forwarded address when there is a
+                                     -- proxy in front, the socket peer when
+                                     -- there is not
+  via             TEXT,              -- the proxy's own address, when the two
+                                     -- differ. Kept because remote_addr then
+                                     -- rests on the proxy telling the truth,
+                                     -- and the peer is the part we saw
+                                     -- ourselves
   auth            TEXT,              -- 'token' | 'token+mtls' | 'none'
 
   started_at      TEXT NOT NULL,     -- UTC, written BEFORE the agent runs
@@ -151,6 +159,21 @@ def _connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns a database predates.
+
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op on an existing table, so a new
+    column would silently never appear on any machine that already had a log --
+    the same shape of bug as an update that replaces only the code. Cheap to do
+    on every open, and it means a schema change never needs a migration step
+    anyone has to remember.
+    """
+    have = {r[1] for r in conn.execute("PRAGMA table_info(calls)")}
+    for column, decl in (("via", "TEXT"),):
+        if column not in have:
+            conn.execute(f"ALTER TABLE calls ADD COLUMN {column} {decl}")
+
+
 def init(directory: str | Path) -> tuple[Path, Path]:
     """Create both databases for one phone. Safe to run again."""
     d = Path(directory)
@@ -158,8 +181,10 @@ def init(directory: str | Path) -> tuple[Path, Path]:
     callers, contacts = d / "callers.db", d / "contacts.db"
     with _connect(callers) as c:
         c.executescript(CALLERS_SCHEMA + CALLS_SCHEMA)
+        _migrate(c)
     with _connect(contacts) as c:
         c.executescript(CONTACTS_SCHEMA + CALLS_SCHEMA)
+        _migrate(c)
     callers.chmod(0o600)
     contacts.chmod(0o600)
     return callers, contacts

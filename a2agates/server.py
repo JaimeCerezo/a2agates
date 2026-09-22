@@ -74,6 +74,34 @@ log = logging.getLogger("a2agates.server")
 # that into a name.
 _remote = contextvars.ContextVar("a2agates_remote", default=None)
 
+
+def _caller_address(scope) -> tuple[str | None, str | None]:
+    """Who called, and who told us so.
+
+    Behind a reverse proxy the socket peer is the proxy, which is nobody: the
+    first real call scm-intranet logged recorded 172.18.0.2, the Docker bridge,
+    for a caller out on the public internet. Useless for attribution, and
+    attribution is most of what the address is for.
+
+    So the forwarded address wins when there is one -- and the peer is kept
+    alongside it, because that swap is a change of evidence. The peer is what
+    this process saw with its own eyes; the forwarded value is what something
+    upstream said, and a caller that already holds a token could put anything
+    in that header. Keeping both means a log entry can be read for what it is
+    rather than trusted flat.
+    """
+    peer = (scope.get("client") or (None, None))[0]
+    forwarded = None
+    for key, value in scope.get("headers") or []:
+        if key == b"x-forwarded-for":
+            # Leftmost is the original client; the rest are the proxies it
+            # crossed on the way.
+            forwarded = value.decode("latin-1").split(",")[0].strip() or None
+            break
+    if forwarded and forwarded != peer:
+        return forwarded, peer
+    return peer, None
+
 BEARER = "bearer"
 
 # What the agent inherits from the server's environment. Kept deliberately
@@ -161,13 +189,14 @@ class BearerAuth:
         prefix = (
             hashlib.sha256(presented).hexdigest()[:8] if presented else None
         )
-        client = scope.get("client") or (None, None)
+        addr, via = _caller_address(scope)
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         db.begin(
             self._log_db,
             direction="in",
             outcome=outcome,
-            remote_addr=client[0],
+            remote_addr=addr,
+            via=via,
             auth="none",
             cred_prefix=prefix,
             finished_at=now,
@@ -211,8 +240,7 @@ class BearerAuth:
             return
 
         if ok:
-            client = scope.get("client") or (None, None)
-            _remote.set(client[0])
+            _remote.set(_caller_address(scope))
             await self.app(scope, receive, send)
             return
 
@@ -452,7 +480,8 @@ class PhoneExecutor(AgentExecutor):
             task_id=task_id,
             context_id=context_id,
             auth="token",
-            remote_addr=_remote.get(),
+            remote_addr=(_remote.get() or (None, None))[0],
+            via=(_remote.get() or (None, None))[1],
             request_sha256=digest,
             request_excerpt=excerpt,
         ) if self._log_db else None
