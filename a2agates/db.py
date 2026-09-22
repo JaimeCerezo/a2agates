@@ -149,6 +149,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _restrict(path: Path) -> None:
+    """0600 on the database and on its WAL sidecars.
+
+    ``init`` chmods the database itself, but SQLite creates ``-wal`` and
+    ``-shm`` on first write, with whatever the umask says -- and the write-ahead
+    log holds the same rows as the database, including a contact's usable
+    token. Found on 2026-09-22 with contacts.db-wal sitting at 0644 inside a
+    0700 directory: no exposure that time, because the directory saved it, but
+    the file mode was a lie about how protected the contents were.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        candidate = Path(str(path) + suffix)
+        try:
+            if candidate.exists():
+                candidate.chmod(0o600)
+        except OSError:
+            pass
+
+
 def _connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
@@ -156,6 +175,7 @@ def _connect(path: str | Path) -> sqlite3.Connection:
     # writer recording a call that is arriving right now.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    _restrict(Path(path))
     return conn
 
 
@@ -185,8 +205,8 @@ def init(directory: str | Path) -> tuple[Path, Path]:
     with _connect(contacts) as c:
         c.executescript(CONTACTS_SCHEMA + CALLS_SCHEMA)
         _migrate(c)
-    callers.chmod(0o600)
-    contacts.chmod(0o600)
+    _restrict(callers)
+    _restrict(contacts)
     return callers, contacts
 
 
