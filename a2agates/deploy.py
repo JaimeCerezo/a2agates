@@ -210,10 +210,17 @@ def converge(user: str | None = None) -> list[str]:
                 try:
                     info = pwd.getpwnam(owner)
                     os.chown(directory, info.pw_uid, info.pw_gid)
-                    for f in ("callers.db", "contacts.db"):
-                        target = f"{directory}/{f}"
-                        if os.path.exists(target):
-                            os.chown(target, info.pw_uid, info.pw_gid)
+                    # Everything in there, not a list of names. The list was
+                    # "callers.db, contacts.db" and the day the schema became
+                    # one phone.db the file was created by root and the
+                    # service could not open its own database. A hardcoded
+                    # list of filenames is a rule that stops being true
+                    # silently.
+                    for f in os.listdir(directory):
+                        try:
+                            os.chown(f"{directory}/{f}", info.pw_uid, info.pw_gid)
+                        except OSError:
+                            pass
                 except (KeyError, PermissionError):
                     pass
             os.chmod(directory, 0o700)
