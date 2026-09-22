@@ -26,6 +26,16 @@ sudo bash update.sh            # every phone on this machine
 sudo bash update.sh --check    # look, change nothing
 ```
 
+**The two halves do not arrive by the same road**, and knowing that saves a
+diagnosis. The script is fetched from `main`, so a fix in `scripts/update.sh`
+lands on the very next run, tagged or not. The package is installed with
+`pip install git+…@<tag>`, because `resolve_version` picks by
+`git ls-remote --tags` on purpose — no CDN in front. So a commit on `main` that
+raises `__version__` **does not exist for the fleet until somebody tags it**:
+the updater will say `package already current`, and it is right. Measured by
+scm-intranet on 2026-09-22 with 0.3.5 sitting untagged: the new guard was
+already running, and only the version card still read 0.3.4.
+
 **Three things the script cannot do for you**, and they are the only decisions
 left:
 
