@@ -306,6 +306,23 @@ if [ "$HOST" != "127.0.0.1" ] && command -v ufw >/dev/null 2>&1 && ufw status 2>
     fi
 fi
 
+# --- stale references to an earlier, hand-made install ---------------------
+# A machine installed by hand kept `a2agates-mcp` inside its own venv, and
+# whoever configured a contact pointed at that path. This script installs the
+# stable one; the old path keeps working until the venv goes away, and then it
+# fails on the next *call* rather than at startup -- so it is discovered by the
+# person dialling, not by the person installing. Warn while someone is still
+# watching the output. Reported by scm-intranet, 2026-09-22.
+for f in /root/.claude.json /root/.mcp.json /home/*/.claude.json /home/*/.mcp.json; do
+    [ -f "$f" ] || continue
+    bad=$(grep -oE '"/[^"]*a2agates-mcp"' "$f" 2>/dev/null | tr -d '"' \
+          | grep -vE "^(/usr/local/bin|$PREFIX)/" | sort -u || true)
+    [ -n "$bad" ] || continue
+    echo "  [!]    $f still dials a2agates-mcp outside $PREFIX:"
+    echo "$bad" | sed 's/^/           /'
+    echo "           Point it at /usr/local/bin/a2agates-mcp -- that path survives updates."
+done
+
 # --- verify, because "it started" is not "it answers" ----------------------
 echo
 sleep 2

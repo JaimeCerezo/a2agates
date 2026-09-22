@@ -41,6 +41,14 @@ Read the mailbox with:  a2agates-note --read
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
 
+    if args and args[0] in ("-h", "--help"):
+        # Not politeness: with no TTY and any argument at all, everything below
+        # takes its input as note text -- so `--help` filed itself as a note,
+        # twice in the same mailbox on 2026-09-22, both times by someone
+        # looking for how to read it. The channel for findings is the one thing
+        # that must not fill up with noise from people trying to use it.
+        print(USAGE)
+        return 0
     if args and args[0] == "--read":
         print(MAILBOX.read_text(encoding="utf-8") if MAILBOX.exists()
               else f"(mailbox empty: {MAILBOX})")
