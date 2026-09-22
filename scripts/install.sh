@@ -21,7 +21,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.17"
+VERSION="v0.1.18"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@ info "installing a2agates $VERSION"
 "$VENV/bin/pip" install --quiet --upgrade "git+$REPO@$VERSION" \
     || die "install failed. Is $VERSION a real tag?"
 
-got=$("$VENV/bin/python" -c 'import a2agates;print(a2agates.__version__)')
+got=$("$VENV/bin/python" -P -c 'import a2agates;print(a2agates.__version__)')
 info "installed $got"
 
 # --- the mailbox -----------------------------------------------------------
@@ -192,7 +192,7 @@ install -d -m 755 "$ETC"
 TOKEN_FILE="${KEEP_TOKEN:-$ETC/$NAME.token}"
 if [ ! -f "$TOKEN_FILE" ]; then
     info "minting a token"
-    "$VENV/bin/python" -c 'import secrets,sys;sys.stdout.write(secrets.token_urlsafe(32))' > "$TOKEN_FILE"
+    "$VENV/bin/python" -P -c 'import secrets,sys;sys.stdout.write(secrets.token_urlsafe(32))' > "$TOKEN_FILE"
     chown "$USER_:$USER_" "$TOKEN_FILE"; chmod 600 "$TOKEN_FILE"
     NEW_TOKEN=yes
 else

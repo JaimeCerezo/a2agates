@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.17"
+VERSION="v0.1.18"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
@@ -28,7 +28,13 @@ die() { echo "a2agates: $*" >&2; exit 1; }
 [ -x "$VENV/bin/python" ] || die "no install at $VENV. Use install.sh first."
 [ "$CHECK" = yes ] || [ "$(id -u)" -eq 0 ] || die "run me with sudo (or --check)."
 
-have=$("$VENV/bin/python" -c 'import a2agates;print(a2agates.__version__)' 2>/dev/null || echo "?")
+# -P on every python call here, and it is not decoration. Without it Python
+# puts the current directory on sys.path, so running this from a checkout of
+# a2agates imports the CHECKOUT instead of the install: the version came from
+# the wrong tree and the integrity check below verified the source against
+# itself and passed. An integrity check you can fool by cd'ing somewhere is
+# worse than none, because it reports "clean".
+have=$("$VENV/bin/python" -P -c 'import a2agates;print(a2agates.__version__)' 2>/dev/null || echo "?")
 echo "a2agates: installed $have, current ${VERSION#v}"
 
 # --- has anyone edited the code? ------------------------------------------
@@ -41,7 +47,7 @@ echo "a2agates: installed $have, current ${VERSION#v}"
 # and an extra file under the package catches a local "improvement" bolted on
 # beside it. Neither is prevented -- the operator has root -- but neither can
 # happen quietly, which is the part that matters.
-site=$("$VENV/bin/python" -c 'import a2agates,os;print(os.path.dirname(os.path.dirname(a2agates.__file__)))')
+site=$("$VENV/bin/python" -P -c 'import sysconfig;print(sysconfig.get_paths()["purelib"])')
 record=$(ls -d "$site"/a2agates-*.dist-info/RECORD 2>/dev/null | head -1 || true)
 drift=0
 if [ -n "$record" ]; then
@@ -49,7 +55,7 @@ if [ -n "$record" ]; then
         case "$path" in a2agates/*.py) ;; *) continue ;; esac
         [ -f "$site/$path" ] || { echo "  MISSING  $path"; drift=1; continue; }
         want=${hash#sha256=}
-        got=$("$VENV/bin/python" - "$site/$path" <<'PY'
+        got=$("$VENV/bin/python" -P - "$site/$path" <<'PY'
 import base64,hashlib,sys
 d=hashlib.sha256(open(sys.argv[1],'rb').read()).digest()
 print(base64.urlsafe_b64encode(d).rstrip(b'=').decode())
@@ -101,7 +107,7 @@ fi
 
 "$VENV/bin/pip" install --quiet --upgrade --force-reinstall "git+$REPO@$VERSION" \
     || die "update failed; the running phone is untouched."
-now=$("$VENV/bin/python" -c 'import a2agates;print(a2agates.__version__)')
+now=$("$VENV/bin/python" -P -c 'import a2agates;print(a2agates.__version__)')
 echo "  updated to $now"
 
 for env in "$ETC"/*.env; do

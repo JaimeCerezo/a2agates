@@ -50,11 +50,12 @@ fi
         "$(/opt/a2agates/venv/bin/python -c 'import a2agates;print(a2agates.__version__)' 2>/dev/null || echo unknown)"
     [ $# -gt 0 ] && printf '%s\n' "$*"
     # Piped input goes in verbatim, fenced: output is the evidence, and
-    # paraphrased output is not evidence.
+    # paraphrased output is not evidence. Checking for actual bytes rather than
+    # for "no tty" -- an agent's shell usually has no tty either, and that was
+    # producing an empty code fence on every note.
     if [ ! -t 0 ]; then
-        printf '\n```\n'
-        cat
-        printf '```\n'
+        piped=$(cat)
+        [ -n "$piped" ] && printf '\n```\n%s\n```\n' "$piped"
     fi
 } >> "$MAILBOX"
 
