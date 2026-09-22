@@ -99,10 +99,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(unit_text(args[1]))
         return 0
     if args and args[0] == "constants":
-        print(f"MAX_TURNS={MAX_TURNS}")
-        print(f"MAX_BUDGET={MAX_BUDGET}")
-        print(f"STATE={STATE}")
-        print(f"TOOLS={' '.join(TOOLS)}")
+        # Every value quoted, and the reason is a bug that took a while to see.
+        # This printed `TOOLS=a2agates-note a2agates-log` unquoted, and the
+        # shell's `eval` read it the only way it could: assign TOOLS for one
+        # command, then RUN `a2agates-log`. So every update quietly printed the
+        # call log in the middle of its output. Harmless here; it would not
+        # have been if the second word had been something that changes things.
+        print(f'MAX_TURNS="{MAX_TURNS}"')
+        print(f'MAX_BUDGET="{MAX_BUDGET}"')
+        print(f'STATE="{STATE}"')
+        print(f'TOOLS="{" ".join(TOOLS)}"')
         return 0
     print("usage: -m a2agates.deploy {unit <user>|constants}", file=sys.stderr)
     return 2
