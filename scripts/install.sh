@@ -21,7 +21,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.16"
+VERSION="v0.1.17"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # ---------------------------------------------------------------------------
@@ -71,8 +71,18 @@ done
 case "$URL" in https://*) ;; *) die "--url must be https. The token travels in a header." ;; esac
 [ -n "$USER_" ] || USER_="${SUDO_USER:-root}"
 id "$USER_" >/dev/null 2>&1 || die "user '$USER_' does not exist."
-[ -n "$CWD" ] || CWD="/srv/a2agates/phone-$NAME"
 [ "${URL%/}" = "$URL" ] && URL="$URL/"
+
+# An existing phone keeps its folder and its credential. Re-running the script
+# is how a machine is updated, and an update that relocates the project or
+# mints a new token would break every caller that already has the old one --
+# which is the opposite of what "run it again" should mean.
+EXISTING="$ETC/$NAME.env"
+if [ -f "$EXISTING" ]; then
+    [ -n "$CWD" ] || CWD=$(grep -oP '^A2A_CWD=\K.*' "$EXISTING" 2>/dev/null || true)
+    KEEP_TOKEN=$(grep -oP '^A2A_TOKEN_FILE=\K.*' "$EXISTING" 2>/dev/null || true)
+fi
+[ -n "$CWD" ] || CWD="/srv/a2agates/phone-$NAME"
 
 echo "a2agates $VERSION -> phone '$NAME', answering as '$USER_'"
 
@@ -179,7 +189,7 @@ fi
 
 # --- the credential --------------------------------------------------------
 install -d -m 755 "$ETC"
-TOKEN_FILE="$ETC/$NAME.token"
+TOKEN_FILE="${KEEP_TOKEN:-$ETC/$NAME.token}"
 if [ ! -f "$TOKEN_FILE" ]; then
     info "minting a token"
     "$VENV/bin/python" -c 'import secrets,sys;sys.stdout.write(secrets.token_urlsafe(32))' > "$TOKEN_FILE"
@@ -251,6 +261,18 @@ EOF
 
 systemctl daemon-reload
 systemctl enable "a2agates@$NAME" >/dev/null 2>&1
+
+# The unit is a systemd TEMPLATE, shared by every phone on this machine, so
+# rewriting it just changed all of them -- and any phone still running is now
+# running a definition that no longer exists on disk. That is exactly the quiet
+# drift this tool is supposed to prevent, so it is neither hidden nor left for
+# the next reboot to discover: they all get restarted, and it is said out loud.
+others=$(systemctl list-units --type=service --all --no-legend 'a2agates@*.service' 2>/dev/null \
+         | awk '{print $1}' | sed 's/^a2agates@//; s/\.service$//' | grep -vx "$NAME" || true)
+if [ -n "$others" ]; then
+    info "the unit is shared; restarting the other phones too: $(echo "$others" | tr '\n' ' ')"
+    for o in $others; do systemctl restart "a2agates@$o" || true; done
+fi
 systemctl restart "a2agates@$NAME"
 
 # --- let the proxy through -------------------------------------------------

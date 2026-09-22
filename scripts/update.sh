@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.16"
+VERSION="v0.1.17"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
@@ -80,8 +80,8 @@ fi
 # a mailbox nobody empties is the same as no mailbox.
 MAILBOX=/var/lib/a2agates/mailbox.md
 if [ -f "$MAILBOX" ]; then
-    notes=$(grep -c '^## ' "$MAILBOX" 2>/dev/null || echo 0)
-    [ "$notes" -gt 0 ] && echo "  mailbox: $notes note(s) waiting -- a2agates-note --read"
+    notes=$(grep -c '^## ' "$MAILBOX" 2>/dev/null) || notes=0
+    [ "${notes:-0}" -gt 0 ] && echo "  mailbox: $notes note(s) waiting -- a2agates-note --read"
 fi
 
 if [ "$CHECK" = yes ]; then
