@@ -190,9 +190,14 @@ Deliberately, so the first version could be evaluated:
 
 What *is* built, and verified rather than assumed:
 
-- **`--allowed-tools` and `--max-turns`**, so a scope reaches the launch. Asked
-  to write a file and run a command, the agent did neither and the file was
-  never created.
+- **`--full-permissions`**, so the answering agent can actually act. Without
+  it a phone reads and runs read-only shell, and everything you opened it for
+  — write, commit, deploy, `sudo` — dies unapproved, because there is no
+  terminal to approve it.
+- **`--max-turns` and `--max-budget`**, which bound a runaway. What does *not*
+  bound anything, corrected on 2026-09-22 after measuring it: `--allowed-tools`
+  only adds to what is auto-approved. It leaves every tool in the catalogue and
+  read-only `Bash` still runs. To bar a tool you need `permissions.deny`.
 - **`--token-expires`**, enforced on every call. A past date refuses to start;
   a 25-second expiry took the same call from 200 to `401 credential expired`.
   That is what makes a short-lived credential safe to hand over in a channel
@@ -223,8 +228,8 @@ Three rules follow:
    group membership is the worst possible candidate for a widely-shared number.
 2. Put it behind TLS and restrict who can reach it. A token crossing the open
    internet in cleartext is not a token, it is a public URL.
-3. Give a scope, and make it reach the launch. A label that does not change
-   `--allowed-tools` changes nothing.
+3. Put the scope where it binds — the token, the user that answers, the
+   budget. Not in a flag: `--allowed-tools` reads like a limit and is not one.
 
 But do not over-apply rule 1. An agent worth phoning often *does* things —
 installs, deploys, maintains — and for that agent the privileges are the

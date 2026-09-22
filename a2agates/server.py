@@ -199,16 +199,44 @@ class LocalClaude:
         executable: str = "claude",
         timeout: float = 300.0,
         allowed_tools: str | None = None,
+        full_permissions: bool = False,
         max_turns: int | None = None,
         max_budget_usd: float | None = None,
     ) -> None:
         self.cwd = str(Path(cwd).resolve())
         self.executable = executable
         self.timeout = timeout
-        # The first piece of "scope decides the launch arguments". A token that
-        # says read-only limits nothing on its own: write actions do park in
-        # input-required, but reads are never gated. Only the launch does.
+        # ``--allowedTools`` ADDS to what is auto-approved. It does not subtract
+        # anything, and this was documented backwards until 2026-09-22, when
+        # scm-intranet reproduced the launch and measured it:
+        #
+        #   * the model's catalogue is NOT trimmed -- with "Read,Glob,Grep" it
+        #     still sees Bash, Write, Edit, Agent, WebFetch. **An agent cannot
+        #     tell from its own tool list whether it has been restricted.**
+        #   * what stops a tool is the permission layer: anything needing
+        #     approval dies for want of a TTY. So Write died -- but Bash ran.
+        #
+        # A phone launched with "Read,Glob,Grep" was therefore never read-only:
+        # it could run arbitrary read shell. If you want a tool genuinely
+        # barred, ``permissions.deny`` is the thing that binds. And note the
+        # asymmetry: in an untrusted workspace ``permissions.allow`` is ignored
+        # in silence, while ``deny`` is still honoured.
         self.allowed_tools = allowed_tools
+        # The other half of the same discovery, and the reason this flag has to
+        # exist. Without it the phone answers with a mutilated agent: it reads,
+        # it runs read-only shell, and everything it was opened up to DO --
+        # write a file, commit, deploy, sudo -- dies unapproved, because there
+        # is nobody at a terminal to approve it.
+        #
+        # This is the switch that makes the principle real: all the policy is
+        # at the door, and inside the room the agent works with everything it
+        # has. It is also the most consequential switch on the machine -- any
+        # admitted caller gets what the phone's user has, with no prompt in the
+        # way. That is the deal, and it is why the controls belong on the token
+        # (who, from where, until when, how much) and on which user answers.
+        # If you want a phone that cannot do this, do not cripple this one:
+        # give a less privileged user its own number.
+        self.full_permissions = full_permissions
         # The clock stops it hanging; these stop it running away. They are not
         # the same limit: a busy agent spends plenty well within its deadline.
         #
@@ -230,6 +258,8 @@ class LocalClaude:
         args = [self.executable, "-p", prompt, "--output-format", "json"]
         if self.allowed_tools:
             args += ["--allowedTools", self.allowed_tools]
+        if self.full_permissions:
+            args += ["--dangerously-skip-permissions"]
         if self.max_turns:
             args += ["--max-turns", str(self.max_turns)]
         if self.max_budget_usd:
@@ -429,9 +459,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--allowed-tools",
         default=None,
-        help="Comma-separated tool list the answering agent is limited to, "
-        "passed straight to claude --allowedTools. Without it the agent can "
-        "use everything its user can reach.",
+        help="Comma-separated tool list passed straight to claude "
+        "--allowedTools. NOTE, measured: this ADDS to what is auto-approved, "
+        "it does not restrict. The agent still sees every tool, and read-only "
+        "shell still runs. To bar a tool, use permissions.deny.",
+    )
+    ap.add_argument(
+        "--full-permissions",
+        action="store_true",
+        help="Answer with --dangerously-skip-permissions, so the agent can "
+        "actually act: write, commit, deploy, sudo. Without it the phone is a "
+        "mutilated agent, because nothing that needs approval can be approved "
+        "-- there is no terminal. This gives any admitted caller what the "
+        "phone's user has: put the controls on the token, and give a less "
+        "privileged user its own number if you want a restricted phone.",
     )
     ap.add_argument(
         "--max-turns",
@@ -502,6 +543,7 @@ def main(argv: list[str] | None = None) -> int:
         executable=args.claude,
         timeout=args.timeout,
         allowed_tools=args.allowed_tools,
+        full_permissions=args.full_permissions,
         max_turns=args.max_turns,
         max_budget_usd=args.max_budget,
     )
@@ -526,7 +568,9 @@ def main(argv: list[str] | None = None) -> int:
         f"  listening on http://{args.host}:{args.port}/\n"
         f"  card advertises {url}\n"
         f"  authentication: {'token required' if token else 'OPEN'}\n"
-        f"  tools: {args.allowed_tools or 'EVERYTHING its user can reach'}\n"
+        f"  auto-approved tools: {args.allowed_tools or 'the defaults'}\n"
+        f"  permissions: "
+        f"{'FULL -- every caller acts as this user' if args.full_permissions else 'prompted, so nothing that needs approval can run'}\n"
         f"  token expires: {expires_at.isoformat() if expires_at else 'never'}\n"
         f"  budget per call: "
         f"{('$' + str(args.max_budget)) if args.max_budget else 'UNCAPPED'}"

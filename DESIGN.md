@@ -561,8 +561,27 @@ can *fetch*, not what it was handed. And a blocked read does not show up in the
 `permission_denials` the call reports back, so the caller cannot tell a wall
 from a refusal.
 
-And note the limit of the flag itself: **`--allowed-tools` bounds which tool,
-not how far it reaches.** `Read` reaches the whole filesystem the user can see.
+And note the limit of the flag itself — **measured on 2026-09-22, and it is
+worse than we wrote here.** `--allowedTools` does not bound anything: it *adds*
+to what is auto-approved and subtracts nothing. The phone quoted above was
+launched with `"Read,Glob,Grep"` and still had `Bash`, `Write`, `Edit` and
+`WebFetch` in its catalogue. `Write` died for want of a TTY; **`Bash` ran.**
+
+Three consequences worth carrying:
+
+- **That phone was never read-only.** Any admitted caller could run arbitrary
+  read shell. The reach was `Read`'s, so nothing new was exposed — but the unit
+  file and the phone's own `CLAUDE.md` were describing a limit that did not
+  exist.
+- **An agent cannot tell from its own tool list whether it is restricted**, so
+  it cannot honestly report its own limits. Ask the launch, not the agent.
+- **In an untrusted workspace, `permissions.allow` is ignored in silence** —
+  the only sign is a line on stderr — while `permissions.deny` is still
+  honoured. If you rely on `allow`, you may be relying on nothing.
+
+This is also the cleanest example of why the policy belongs at the door. We
+spent a day believing a flag was a wall. The token, by contrast, either matched
+or it did not.
 
 ### But most of the time the power is the point
 
@@ -851,9 +870,13 @@ you find out the day you rebuild, which is the worst possible moment.
 
 Already built, so the rest can be read against it:
 
-- **The scope reaching the launch** — `--allowed-tools` and `--max-turns`.
-  Verified: asked to write a file and run a command, the agent did neither and
-  the file was never created.
+- **The launch answering with full permissions** — `--full-permissions`, so the
+  agent can write, commit, deploy and `sudo`. Verified in both directions: with
+  it, `sudo -n id -un` returns `root`; without it, the same call dies with
+  *"This command requires approval"* and there is nobody to approve it.
+- **A runaway bounded** — `--max-turns` and `--max-budget`. What was written
+  here before, and is false: that `--allowed-tools` made a scope reach the
+  launch. It does not bind. See the correction above.
 - **Expiry enforced** — `--token-expires`. Verified both ways: a past date
   refuses to start, and a 25-second expiry took the same call from 200 to
   `401 credential expired`.

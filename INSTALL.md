@@ -37,13 +37,39 @@ difference, and it is about the holder, not about the phone.
 A dedicated user needs its own Claude authentication, which needs a real
 terminal. Plan for a human to run that step.
 
-### What the caller may do
+### What the caller may do — and the correction that cost us a day
 
-`--allowed-tools` is passed straight to `claude`, and it is the only limit that
-actually binds. Note what it does **not** do: it bounds *which tool*, not *how
-far it reaches*. `Read` reaches every file the user can see.
+**Use `--full-permissions`.** Without it the phone answers with a mutilated
+agent: it can read, it can run read-only shell, and every single thing you
+opened the phone up to *do* — write a file, commit, deploy, `sudo` — dies
+unapproved, because there is no terminal and therefore nobody to approve it.
 
-For a question-answering phone, `"Read,Glob,Grep"` is a sensible start.
+An earlier version of this guide said `--allowed-tools` "is the only limit that
+actually binds". **That was wrong**, and it was wrong in the dangerous
+direction. scm-intranet reproduced the exact launch on 2026-09-22 and measured
+it:
+
+- **`--allowedTools` adds to what is auto-approved. It subtracts nothing.** The
+  model's catalogue is not trimmed: launched with `"Read,Glob,Grep"` it still
+  sees `Bash`, `Write`, `Edit`, `Agent`, `WebFetch`.
+- **An agent cannot tell from its own tool list whether it has been
+  restricted** — which means it cannot honestly report its own limits.
+- What actually stopped anything was the permission layer: `Write` died for
+  want of a TTY, **but `Bash` ran**. So a phone advertised as read-only was
+  never read-only — it could run arbitrary read shell. Same reach as `Read`,
+  so no new exposure; but the unit file and the phone's own `CLAUDE.md` were
+  telling a lie.
+
+If you genuinely want a tool barred, the thing that binds is
+**`permissions.deny`**. And mind the asymmetry, also measured: in a workspace
+that is not trusted, `permissions.allow` is ignored in silence — only a warning
+on stderr — while `deny` is still honoured.
+
+But before reaching for `deny`, reread [DESIGN.md](DESIGN.md), *"The principle:
+all the policy is at the door"*. Crippling the phone is a blunt control: it
+hits your trusted callers exactly as hard as the hostile one, and it protects
+you from nobody who already holds SSH. **If you want a restricted phone, do not
+restrict this one. Give a less privileged user its own number.**
 
 ### What one call may cost
 
@@ -266,16 +292,17 @@ ExecStart=/home/<user>/a2agates-venv/bin/a2agates \
     --port ${A2A_PORT} \
     --public-url ${A2A_PUBLIC_URL} \
     --auth-token-file ${A2A_TOKEN_FILE} \
-    --allowed-tools ${A2A_ALLOWED_TOOLS} \
+    --full-permissions \
     --max-budget ${A2A_MAX_BUDGET} \
     --max-turns ${A2A_MAX_TURNS} \
     --token-expires ${A2A_TOKEN_EXPIRES}
 Restart=on-failure
 RestartSec=5
-# Blocks privilege escalation -- including this agent's own sudo. Right for a
-# question-answering phone; wrong for one whose whole purpose is to install and
-# deploy. Decide which you are building.
-NoNewPrivileges=true
+# NoNewPrivileges=true would block privilege escalation -- including this
+# agent's own sudo, which is half of what it is for. Left out on purpose. If
+# you put it back, know that --full-permissions will no longer buy you sudo,
+# and the phone will fail at exactly the jobs you opened it for. The way to get
+# a phone that cannot escalate is a user that cannot escalate, on its own port.
 
 [Install]
 WantedBy=multi-user.target
