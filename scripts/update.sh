@@ -15,10 +15,11 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.23"
+VERSION="v0.1.24"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
+UNIT=/etc/systemd/system/a2agates@.service
 
 CHECK=no
 [ "${1:-}" = "--check" ] && CHECK=yes
@@ -117,12 +118,55 @@ for b in a2agates a2agates-mcp; do
     [ -x "$VENV/bin/$b" ] && ln -sfn "$VENV/bin/$b" "/usr/local/bin/$b"
 done
 
+eval "$("$VENV/bin/python" -P -m a2agates.deploy constants)"
+
+# --- bring the DEPLOYMENT up to date, not just the package -----------------
+# The bug this closes, found three times in one day wearing three hats: an
+# update replaced the code and nothing else. So a phone could be on the newest
+# version while still running the ExecStart it was installed with -- on
+# 2026-09-22 that meant a current phone launched without --db, answering calls
+# perfectly and recording not one of them. A missing log looks exactly like a
+# quiet week, so nobody could tell.
+#
+# The unit is rendered by the package now, so this cannot drift again.
+if [ -f "$UNIT" ]; then
+    user=$(grep -oP '^User=\K.*' "$UNIT" 2>/dev/null || true)
+    if [ -n "$user" ]; then
+        "$VENV/bin/python" -P -m a2agates.deploy unit "$user" > "$UNIT.new" \
+            && { cmp -s "$UNIT.new" "$UNIT" || { mv "$UNIT.new" "$UNIT"; echo "  unit file refreshed"; }; }
+        rm -f "$UNIT.new"
+        systemctl daemon-reload
+    fi
+fi
+
+# Same for the settings the phone is not allowed to drift on: the fleet limits,
+# and the database directory a phone installed before v0.1.20 has never heard
+# of. Everything else in the env file is this machine's own business.
+for env in "$ETC"/*.env; do
+    [ -f "$env" ] || continue
+    n=$(basename "$env" .env)
+    changed=""
+    for pair in "A2A_DB=$STATE/$n" "A2A_MAX_TURNS=$MAX_TURNS" "A2A_MAX_BUDGET=$MAX_BUDGET"; do
+        key=${pair%%=*}
+        if grep -q "^$key=" "$env"; then
+            grep -q "^$pair$" "$env" || { sed -i "s|^$key=.*|$pair|" "$env"; changed="yes"; }
+        else
+            echo "$pair" >> "$env"; changed="yes"
+        fi
+    done
+    user=$(grep -oP '^User=\K.*' "$UNIT" 2>/dev/null || echo root)
+    install -d -o "$user" -g "$user" -m 700 "$STATE/$n"
+    sudo -u "$user" "$VENV/bin/python" -P -c \
+        "import a2agates.db as d,sys; d.init(sys.argv[1])" "$STATE/$n" 2>/dev/null || true
+    [ -n "$changed" ] && echo "  $n: settings brought into line"
+done
+
 # The command-line tools too. Missed until scm-intranet went looking for
 # a2agates-log on 2026-09-22 and found it absent: install.sh placed them,
 # update.sh did not, so every machine that updated rather than reinstalled was
 # missing whatever tooling had been added since. A phone can be current and
 # still have none of the commands that make it usable.
-for tool in a2agates-note a2agates-log; do
+for tool in $TOOLS; do
     curl -fsSL "https://raw.githubusercontent.com/JaimeCerezo/a2agates/$VERSION/scripts/$tool" \
         -o "/usr/local/bin/$tool.new" 2>/dev/null \
         && mv "/usr/local/bin/$tool.new" "/usr/local/bin/$tool" \

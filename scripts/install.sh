@@ -21,23 +21,13 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.23"
+VERSION="v0.1.24"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
-# ---------------------------------------------------------------------------
-# Fleet-wide constants. NOT options.
-#
-# Every phone in a fleet runs the same limits, so that "what happens if I call
-# it" has one answer everywhere instead of one per machine. A limit that varies
-# by host is a limit nobody can reason about from the calling side.
-#
-# The numbers, measured: a question costs 0.05-0.40, real work costs 1.9-3.6.
-# The budget is the real limit; the turn cap is only a backstop against a loop,
-# so it sits well above the point where money runs out. (It was 20 for a while,
-# which quietly made turns the binding limit and undid the whole argument.)
-# ---------------------------------------------------------------------------
-MAX_TURNS=60
-MAX_BUDGET=5.00
+# Fleet constants and the unit file now live in the package (a2agates.deploy),
+# not here. Anything only the installer knows drifts away on every machine that
+# updates instead of reinstalling -- which is every machine, because updating is
+# the path we tell them to take. They are read below, once the package is in.
 
 PREFIX=/opt/a2agates
 VENV="$PREFIX/venv"
@@ -118,6 +108,10 @@ info "installing a2agates $VERSION"
 got=$("$VENV/bin/python" -P -c 'import a2agates;print(a2agates.__version__)')
 info "installed $got"
 
+# The deployment comes from the package from here on: same limits, same unit,
+# whether this machine is being installed or updated.
+eval "$("$VENV/bin/python" -P -m a2agates.deploy constants)"
+
 # --- stable paths, so a contact list survives a move -----------------------
 # Reported by scm-intranet on 2026-09-22, and it is a design fault, not a
 # documentation one. Its outgoing MCP contact pointed straight into the old
@@ -158,7 +152,7 @@ if [ ! -f /var/lib/a2agates/mailbox.md ]; then
         > /var/lib/a2agates/mailbox.md
     chmod 666 /var/lib/a2agates/mailbox.md
 fi
-for tool in a2agates-note a2agates-log; do
+for tool in $TOOLS; do
     if [ -f "$(dirname "$0")/$tool" ]; then
         install -m 755 "$(dirname "$0")/$tool" "/usr/local/bin/$tool"
     else
@@ -223,7 +217,7 @@ fi
 # Created at install, all of them, even the ones nothing writes to yet. An
 # empty table costs nothing; a missing one turns the day you need it into a
 # migration on a live phone.
-DBDIR=/var/lib/a2agates/$NAME
+DBDIR=$STATE/$NAME
 install -d -o "$USER_" -g "$USER_" -m 700 "$DBDIR"
 sudo -u "$USER_" "$VENV/bin/python" -P -c \
     "import a2agates.db as d, sys; print(' '.join(str(p.name) for p in d.init(sys.argv[1])))" \
@@ -269,39 +263,8 @@ A2A_TOKEN_EXPIRES=$EXPIRES
 EOF
 chmod 644 "$ENV_FILE"
 
-cat > "$UNIT" <<EOF
-[Unit]
-Description=a2agates phone (%i)
-# docker.service because a phone often binds to the bridge and is fronted by a
-# proxy in a container. Without this it restart-loops after a reboot.
-After=network-online.target docker.service
-Wants=network-online.target docker.service
-
-[Service]
-Type=exec
-User=$USER_
-EnvironmentFile=$ETC/%i.env
-ExecStart=$VENV/bin/a2agates \\
-    --cwd \${A2A_CWD} \\
-    --name \${A2A_NAME} \\
-    --host \${A2A_HOST} \\
-    --port \${A2A_PORT} \\
-    --public-url \${A2A_PUBLIC_URL} \\
-    --auth-token-file \${A2A_TOKEN_FILE} \\
-    --db \${A2A_DB} \\
-    --full-permissions \\
-    --max-turns \${A2A_MAX_TURNS} \\
-    --max-budget \${A2A_MAX_BUDGET} \\
-    --token-expires \${A2A_TOKEN_EXPIRES}
-Restart=on-failure
-RestartSec=5
-# NoNewPrivileges is deliberately absent: it would block the agent's own sudo,
-# which is half of what the phone is for. A phone that must not escalate is a
-# phone answering as a user that cannot escalate -- not this flag.
-
-[Install]
-WantedBy=multi-user.target
-EOF
+"$VENV/bin/python" -P -m a2agates.deploy unit "$USER_" > "$UNIT" \
+    || die "could not render the unit file."
 
 systemctl daemon-reload
 systemctl enable "a2agates@$NAME" >/dev/null 2>&1

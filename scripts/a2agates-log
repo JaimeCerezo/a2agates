@@ -30,7 +30,9 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -z "$phone" ]; then
-    phone=$(ls -1 "$ROOT" 2>/dev/null | head -1 || true)
+    # Only directories: /var/lib/a2agates also holds mailbox.md, and picking
+    # that as a phone produced "no log at .../mailbox.md/callers.db".
+    phone=$(find "$ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | head -1 || true)
     [ -n "$phone" ] || { echo "a2agates-log: no phone found under $ROOT" >&2; exit 1; }
 fi
 DB="$ROOT/$phone/callers.db"
