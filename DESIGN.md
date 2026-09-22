@@ -971,8 +971,25 @@ Still missing:
 - **Multiple tokens on the ear.** Today it reads one file and compares against a
   single string, so there is no token per pair and the log cannot say *who*
   called.
-- **The call log.** The argument above promotes this from useful to necessary:
-  when the agent is powerful on purpose, the record is the only control left.
+- ~~**The call log.**~~ **Built in v0.1.20.** The argument above promoted it
+  from useful to necessary — when the agent is powerful on purpose, the record
+  is the only control left — but the reason it got built first was narrower and
+  more concrete: **making a retry safe.**
+
+  Schema and rationale in `a2agates/db.py`. The decision that makes it work:
+  **a row is inserted when the call arrives, before the agent starts**, and
+  updated when it ends. Write only on completion and a call killed halfway
+  leaves no trace at all, which is exactly the call you need. So an old row
+  with `finished_at IS NULL` is not a gap in the record — it *is* the record:
+  this ran, nobody learned how it ended, go and look at what it left.
+
+  Refused calls are logged too; they had been leaving no trace anywhere. Of the
+  credential presented, eight hex of its hash and never the value — enough to
+  tell one wrong token retrying from a sweep with five hundred different ones.
+
+  Still missing, and it is the same gap as everywhere: with one shared token
+  the log records an **address**, not a name. `callers` is what turns it into
+  attribution.
 
   And there is a half of this that had not been counted, reported by
   scm-intranet on 2026-09-22 from the side nobody was looking at. Cost, turns
