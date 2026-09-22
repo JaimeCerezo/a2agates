@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=20)
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
 
-    db = _phone_dir(args.phone) / "callers.db"
+    db = _phone_dir(args.phone) / "phone.db"
     if not db.exists():
         sys.exit(f"a2agates-log: no log at {db}")
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
