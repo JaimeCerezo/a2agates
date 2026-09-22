@@ -21,7 +21,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.27"
+VERSION="v0.1.28"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # Fleet constants and the unit file now live in the package (a2agates.deploy),
@@ -122,7 +122,7 @@ eval "$("$VENV/bin/python" -P -m a2agates.deploy constants)"
 #
 # So the venv path stops being something anyone else references. Contacts point
 # at these, and they keep working across an upgrade, a relocation or a rebuild.
-for b in a2agates a2agates-mcp; do
+for b in a2agates a2agates-mcp a2agates-admin; do
     [ -x "$VENV/bin/$b" ] && ln -sfn "$VENV/bin/$b" "/usr/local/bin/$b"
 done
 info "stable entry points: /usr/local/bin/a2agates, /usr/local/bin/a2agates-mcp"

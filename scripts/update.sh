@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.27"
+VERSION="v0.1.28"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
@@ -119,7 +119,7 @@ fi
 # Kept in step with the install: a contact list points at these, never into the
 # venv, so that moving or rebuilding the install does not quietly break the
 # ability to place calls.
-for b in a2agates a2agates-mcp; do
+for b in a2agates a2agates-mcp a2agates-admin; do
     [ -x "$VENV/bin/$b" ] && ln -sfn "$VENV/bin/$b" "/usr/local/bin/$b"
 done
 

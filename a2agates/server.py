@@ -59,7 +59,7 @@ from a2a.utils.constants import PROTOCOL_VERSION_CURRENT, TransportProtocol
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 
-from . import __version__, db
+from . import __version__, callers as callers_mod, db
 
 log = logging.getLogger("a2agates.server")
 
@@ -73,6 +73,8 @@ log = logging.getLogger("a2agates.server")
 # log cannot say *who* called, only from where. The callers table is what turns
 # that into a name.
 _remote = contextvars.ContextVar("a2agates_remote", default=None)
+# The caller's registered name, once there is one to know.
+_who = contextvars.ContextVar("a2agates_caller", default=None)
 
 
 def _caller_address(scope) -> tuple[str | None, str | None]:
@@ -171,10 +173,16 @@ class BearerAuth:
         token: str,
         expires_at: datetime | None = None,
         log_db: str | None = None,
+        callers_db: str | None = None,
     ) -> None:
         self.app = app
         self._token = token.strip().encode()
         self._expires_at = expires_at
+        # The registered callers, when there are any. The single token stays as
+        # the fallback so that a phone installed before this existed keeps
+        # answering: an upgrade that silently stops accepting the credential
+        # everyone already holds is not an upgrade.
+        self._callers_db = callers_db
         # Refused calls are the security-relevant rows, and until now they left
         # no trace anywhere at all.
         self._log_db = log_db
@@ -221,13 +229,29 @@ class BearerAuth:
                 break
 
         parts = presented.split(None, 1)
-        ok = (
-            len(parts) == 2
-            and parts[0].lower() == b"bearer"
-            # compare_digest, so a wrong token takes the same time as a right
-            # one and the comparison itself leaks nothing.
-            and hmac.compare_digest(parts[1].strip(), self._token)
-        )
+        bearer = parts[1].strip() if len(parts) == 2 and parts[0].lower() == b"bearer" else b""
+
+        # Registered callers first: a hash match gives a NAME, which is what
+        # the log has been missing and what makes revoking one caller possible
+        # without breaking the others.
+        caller = None
+        if bearer and self._callers_db and callers_mod.count(self._callers_db):
+            addr, _ = _caller_address(scope)
+            caller = callers_mod.identify(self._callers_db, bearer, addr)
+            if caller is None:
+                # Deliberately the same refusal as an unknown token. Saying
+                # *which* check failed -- unknown, revoked, expired, wrong
+                # address -- tells whoever is probing which part they got
+                # right.
+                self._refused(scope, "auth_failed", bearer)
+                await _refuse(send, b'{"error":"unauthorized"}')
+                return
+            _who.set(caller["alias"])
+            log.info("call from caller=%s scope=%s", caller["alias"], caller["scope"])
+            await self.app(scope, receive, send)
+            return
+
+        ok = bool(bearer) and hmac.compare_digest(bearer, self._token)
 
         # Checked after the token, deliberately: saying "expired" to someone
         # who never held the credential would confirm that a credential
@@ -480,6 +504,7 @@ class PhoneExecutor(AgentExecutor):
             task_id=task_id,
             context_id=context_id,
             auth="token",
+            caller=_who.get(),
             remote_addr=(_remote.get() or (None, None))[0],
             via=(_remote.get() or (None, None))[1],
             request_sha256=digest,
@@ -724,10 +749,10 @@ def main(argv: list[str] | None = None) -> int:
         auth=token is not None,
     )
 
-    log_db = None
+    log_db = callers_db = None
     if args.db:
-        callers_db, _ = db.init(args.db)
-        log_db = str(callers_db)
+        path, _ = db.init(args.db)
+        log_db = callers_db = str(path)
         # Said at startup rather than left to be discovered. A call that
         # started and never closed is the trace of one that was killed
         # halfway -- and if this phone can write, halfway may mean a commit
@@ -758,7 +783,8 @@ def main(argv: list[str] | None = None) -> int:
         *create_jsonrpc_routes(handler, rpc_url="/"),
     ]
     middleware = (
-        [Middleware(BearerAuth, token=token, expires_at=expires_at, log_db=log_db)]
+        [Middleware(BearerAuth, token=token, expires_at=expires_at,
+                    log_db=log_db, callers_db=callers_db)]
         if token
         else None
     )
@@ -769,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
         f"  listening on http://{args.host}:{args.port}/\n"
         f"  card advertises {url}\n"
         f"  authentication: {'token required' if token else 'OPEN'}\n"
+        f"  callers: {callers_mod.count(callers_db) if callers_db else 0} registered"
+        f"{' (falling back to the single token file)' if not (callers_db and callers_mod.count(callers_db)) else ''}\n"
         f"  auto-approved tools: {args.allowed_tools or 'the defaults'}\n"
         f"  permissions: "
         f"{'FULL -- every caller acts as this user' if args.full_permissions else 'prompted, so nothing that needs approval can run'}\n"
