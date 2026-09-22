@@ -254,7 +254,41 @@ class LocalClaude:
     def _env(self) -> dict[str, str]:
         return {k: v for k, v in os.environ.items() if k in _INHERITED}
 
+    def _budget_notice(self) -> str:
+        """Tell the agent what it has to spend, so it can land instead of crash.
+
+        The cap is checked BETWEEN turns and the turn in flight always runs to
+        completion, so the process is killed wherever it happens to be. While
+        the phone only answered questions that was harmless -- a dead call and
+        a wasted dollar. Once it can act it is not: measured on 2026-09-22, a
+        call died mid-task having committed but not pushed, and having already
+        deployed, so the live site and the repository disagreed for minutes
+        with nothing raising an error anywhere.
+
+        No flag prevents that, because the kill is external and abrupt. The
+        only thing that can stop half-done work is the agent choosing to finish
+        cleanly while it still has money -- and for that it has to know. So we
+        tell it, in the prompt, and ask for the ordering that survives being
+        cut: push before you deploy, because what is pushed is the only thing
+        that outlives the session.
+        """
+        return (
+            "\n\n---\n"
+            f"[a2agates] You have ${self.max_budget_usd:.2f} for this call. It "
+            "is checked between turns and the turn in flight is never "
+            "interrupted, so when it runs out you are killed where you stand "
+            "-- no cleanup, no final message.\n"
+            "If you are changing anything, work so that being cut is survivable: "
+            "commit and PUSH before you deploy, and prefer one complete small "
+            "step to a large half-done one. If you judge you are running short, "
+            "STOP, leave things consistent, and say what is left. A partial "
+            "answer that names what is missing is worth far more than being "
+            "killed mid-write."
+        )
+
     async def ask(self, prompt: str, *, resume: str | None) -> dict:
+        if self.max_budget_usd:
+            prompt = prompt + self._budget_notice()
         args = [self.executable, "-p", prompt, "--output-format", "json"]
         if self.allowed_tools:
             args += ["--allowedTools", self.allowed_tools]
@@ -381,6 +415,27 @@ class PhoneExecutor(AgentExecutor):
             "duration_ms": result.get("duration_ms"),
         }
 
+        # And the same facts written down on THIS machine, which until now only
+        # logged the prompt. Reported by scm-intranet on 2026-09-22 from the
+        # side nobody had considered: cost, turns and denials went to the
+        # *caller* and nowhere else, so the machine that ran the work could not
+        # say how its own call ended. Twice in one day an operator could not
+        # tell why a call had died on the machine where it died.
+        #
+        # This is not the call log -- that needs the callers table, to say WHO
+        # rang. It is the half that costs one line and removes the blindness.
+        log.info(
+            "call finished: context=%s session=%s outcome=%s turns=%s "
+            "cost=%s duration_ms=%s denials=%d",
+            context_id,
+            session_id,
+            result.get("subtype") or ("error" if result.get("is_error") else "ok"),
+            meta["num_turns"],
+            meta["cost_usd"],
+            meta["duration_ms"],
+            len(meta["permission_denials"]),
+        )
+
         text = (result.get("result") or "").strip() or "(no answer)"
 
         if result.get("is_error"):
@@ -399,7 +454,11 @@ class PhoneExecutor(AgentExecutor):
             elif subtype == "error_max_budget_usd":
                 reason = (
                     "the agent hit its spending cap for this call. Ask something "
-                    "narrower, or the operator can raise --max-budget-usd."
+                    "narrower, or the operator can raise --max-budget-usd. "
+                    "WARNING: the cap is checked between turns and the turn in "
+                    "flight runs to completion, so if this agent can write, it "
+                    "was killed wherever it stood -- it may have left work half "
+                    "done. Check the state on that machine before retrying."
                 )
             else:
                 reason = f"the agent failed: {subtype}"

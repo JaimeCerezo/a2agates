@@ -69,6 +69,22 @@ Two places, and they are narrow:
 
 - **Spend.** A budget cap is not a trust control, it is a blast radius for
   mistakes and loops. Keep it even for a fully trusted caller.
+
+  But **size it to the work, not to the question**, and know how it fails. The
+  cap is checked between turns and the turn in flight is never interrupted, so
+  the agent is killed where it stands. On a phone that only answers, an
+  exhausted budget is a wasted dollar. On a phone that acts, it is something
+  else: measured on 2026-09-22, a call died having committed but not pushed,
+  and having already deployed — the live site and the repository disagreed for
+  minutes and **nothing raised an error anywhere**. A blast radius that leaves
+  the machine quietly inconsistent is not a blast radius, it is a trap.
+
+  There is no flag that prevents it, because the kill is external and abrupt.
+  The only thing that can: the agent deciding to land while it still has fuel.
+  So the phone now tells it the budget at the start of every call and asks for
+  the order that survives being cut — push before deploying, small complete
+  steps, stop and report rather than die mid-write. Mitigation, not a
+  guarantee. **After a call dies on budget, go and look at what it left.**
 - **A number handed to many callers**, where the token itself cannot carry the
   distinction. There, capping the agent is the only tool left — which is a sign
   you probably wanted a second phone.
@@ -909,6 +925,15 @@ Still missing:
   called.
 - **The call log.** The argument above promotes this from useful to necessary:
   when the agent is powerful on purpose, the record is the only control left.
+
+  And there is a half of this that had not been counted, reported by
+  scm-intranet on 2026-09-22 from the side nobody was looking at. Cost, turns
+  and denials were handed to the **caller** and to nobody else; the journal on
+  the machine that did the work held the prompt and nothing more. So **the
+  machine could not say how its own call ended** — twice in one day an operator
+  standing on it could not tell why a call had died there. The outcome is now
+  logged locally on every call, which removes the blindness; the log that says
+  *who rang* still needs the `callers` table.
 - The daemon and its socket. Today the token sits in an environment variable the
   agent could read.
 - The origin filter, which today has to sit in the reverse proxy — the wrong

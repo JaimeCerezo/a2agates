@@ -84,8 +84,31 @@ Know what the budget does and does not do: it is checked **between turns**, so
 the first turn runs to completion whatever it costs. Measured: a 0.01 cap still
 spent 0.064. It bounds a runaway, not a single expensive answer.
 
-A question-answering call on a small project measures around 0.05–0.08. A cap
-of 0.40 leaves room to think without leaving room to run away.
+**Size it to the work, not to the question.** This is where we got it wrong, so
+take the numbers rather than the reasoning:
+
+| What the phone is for | Measured | Sensible cap |
+|---|---|---|
+| Answering questions about a project | 0.05–0.40 | **0.40** |
+| Doing the work — edit, commit, push, deploy | 1.9–3.6 | **5.00** |
+
+A cap sized for answering, on a phone that can act, is the worst of both: it
+does not bound anything useful, and it kills real work halfway. Measured on
+2026-09-22 — a 0.40 cap on a production task spent the whole 0.40, returned
+nothing, and still left changes behind.
+
+> **The failure mode, and it is the one that should worry you.** The cap is
+> checked between turns and the turn in flight is never interrupted, so the
+> agent is killed **wherever it stands**. On that same call it had committed
+> but not pushed, and had already deployed — so the live site and the
+> repository disagreed for minutes, **with no error raised anywhere**. While a
+> phone only answers, an exhausted budget is a wasted dollar. Once it can act,
+> it is a silent inconsistency.
+>
+> a2agates tells the agent its budget at the start of every call and asks it to
+> work in a cut-survivable order — push before deploying, small complete steps,
+> stop and report rather than be killed mid-write. That is mitigation, not a
+> guarantee: **after a call dies on budget, go and look at what it left.**
 
 ### How it gets TLS
 
@@ -310,6 +333,12 @@ WantedBy=multi-user.target
 
 **Do not `systemctl enable` it for a first test.** If the machine reboots, a
 phone you are still evaluating should not come back by itself.
+
+**And remember to enable it once it is real.** Easy to forget, because nothing
+complains: the phone keeps working for days and simply never comes back after a
+reboot. Found on a live install on 2026-09-22, where `After=docker.service` had
+been added carefully to a unit that was still `disabled` — the ordering could
+never matter, because the service was not being started at all.
 
 `--public-url` must be the **HTTPS address callers will use**, not where it
 binds. The card advertises this, and a card advertising `127.0.0.1` is a number
