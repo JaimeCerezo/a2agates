@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="v0.1.21"
+VERSION="v0.1.22"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
@@ -121,6 +121,25 @@ for env in "$ETC"/*.env; do
     [ -f "$env" ] || continue
     n=$(basename "$env" .env)
     systemctl is-enabled "a2agates@$n" >/dev/null 2>&1 || continue
+
+    # Am I running INSIDE the phone I am about to restart? An agent updating
+    # itself while answering a call is the normal case, not an edge one -- it
+    # is how every machine is meant to keep current -- and restarting the
+    # service that is serving the call kills the call, the answer, and this
+    # script, halfway.
+    #
+    # systemd puts every descendant of the unit in its cgroup, so the question
+    # is answerable for free, and the fix is to let go of the restart: hand it
+    # to systemd, which is not about to die, and let it happen once the call
+    # has hung up.
+    if grep -qs "a2agates@$n\.service" /proc/self/cgroup; then
+        systemd-run --on-active=20 --unit="a2agates-bounce-$n" \
+            systemctl restart "a2agates@$n" >/dev/null 2>&1 \
+            && printf '  phone %-16s restart scheduled in 20s (you are on this line right now)\n' "$n" \
+            || printf '  phone %-16s RESTART IT YOURSELF after hanging up: systemctl restart a2agates@%s\n' "$n" "$n"
+        continue
+    fi
+
     systemctl restart "a2agates@$n"
     host=$(grep -oP '^A2A_HOST=\K.*' "$env"); port=$(grep -oP '^A2A_PORT=\K.*' "$env")
     sleep 2
