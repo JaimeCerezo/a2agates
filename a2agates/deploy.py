@@ -139,7 +139,7 @@ def _retire_token_file(path: str, changed: list[str]) -> None:
         return
     try:
         os.remove(path)
-        changed.append(f"retired shared token {path}")
+        changed.append(f"retired shared token {path} DELETED")
     except OSError:
         # Said rather than swallowed: a token that could not be deleted is
         # exactly the one somebody has to go and delete by hand.
@@ -179,7 +179,7 @@ def converge(user: str | None = None) -> list[str]:
         if os.path.lexists(dst):
             os.remove(dst)
         os.symlink(src, dst)
-        changed.append(f"command {name}")
+        changed.append(f"command {name} linked")
 
     # The mailbox, before the phone answers its first call: "do not modify the
     # tool" is only fair if there is somewhere for a finding to go. An agent
@@ -190,7 +190,7 @@ def converge(user: str | None = None) -> list[str]:
             fh.write("# a2agates — mailbox\n\nNotes from agents on this "
                      "machine. Append only.\n")
         os.chmod(MAILBOX, 0o666)
-        changed.append("mailbox")
+        changed.append("mailbox created")
 
     # The unit, rendered from this version rather than from a copy in a shell
     # script that can fall behind.
@@ -210,7 +210,7 @@ def converge(user: str | None = None) -> list[str]:
         if current != wanted:
             with open(unit, "w", encoding="utf-8") as fh:
                 fh.write(wanted)
-            changed.append("unit file")
+            changed.append("unit file rewritten")
 
     # Every phone's settings and databases. The fleet constants are rewritten
     # rather than merged: a limit that drifted is a limit that has to come back
@@ -254,7 +254,7 @@ def converge(user: str | None = None) -> list[str]:
             if dirty:
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write("\n".join(out) + "\n")
-                changed.append(f"{name} settings")
+                changed.append(f"{name} settings updated")
 
             # The databases, all of them, even the ones nothing writes to yet.
             # An empty table costs nothing; a missing one turns the day you
@@ -284,7 +284,7 @@ def converge(user: str | None = None) -> list[str]:
                     pass
             os.chmod(directory, 0o700)
             if fresh:
-                changed.append(f"{name} databases")
+                changed.append(f"{name} databases created")
 
     return changed
 
@@ -300,8 +300,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args and args[0] == "converge":
         user = args[1] if len(args) > 1 else None
+        # Each item carries its own verb. A single trailing "updated" turned
+        # "retired shared token /etc/a2agates/x.token" into a line claiming the
+        # file had been updated, when converge had just deleted it -- the one
+        # destructive thing it does, described as the mildest.
         for item in converge(user):
-            print(f"  {item} updated")
+            print(f"  {item}")
         return 0
     if args and args[0] == "constants":
         # What the shell scripts need from the package, as assignments they can

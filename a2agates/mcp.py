@@ -98,15 +98,33 @@ def _log(direction: str, **fields) -> int | None:
         return None
 
 
-CONTACTS = _contacts()
-NAMES = sorted(CONTACTS)
+# The names known AT STARTUP, and only for the instructions below -- what the
+# model is told exists. Everything that actually dials re-reads the table, so
+# the credential in hand is never a stale copy.
+#
+# The difference is not academic. Until v0.3.4 the whole contact list was read
+# once, here, at import time: a token rotated afterwards did not reach a
+# running dialer, which then presented the old one and got a 401 -- an error
+# that reads as "the far end rejected me" when the truth is "I called with a
+# credential I had cached". It happened between Aris and scm-intranet on
+# 2026-09-22 and cost both ends a debugging session each.
+#
+# It also contradicted the reason SQLite was chosen over files, which DESIGN.md
+# states plainly: "it queries on each call and sees the current state -- add a
+# friend and the next call already finds it, with nothing to reload". True of
+# the ear; it was not true of the mouth.
+STARTUP_NAMES = sorted(_contacts())
 
 server = MCPServer(
     name="a2agates",
     instructions=(
         "Lets you phone another agent. You can only call the names in this "
         "list, and there is no way to pass an address instead: "
-        + (", ".join(NAMES) if NAMES else "nobody is in the contact list yet.")
+        + (", ".join(STARTUP_NAMES) if STARTUP_NAMES
+           else "nobody is in the contact list yet.")
+        + ". The list is read fresh on every call, so a name added after this "
+        "session started is callable even if it is missing here -- "
+        "list_contacts is the current answer."
     ),
 )
 
@@ -130,15 +148,20 @@ if not DB:
 
 
 def _destination(who: str) -> tuple[str, str, str] | str:
-    """Resolve a name to (name, url, token), or return an error to show."""
+    """Resolve a name to (name, url, token), or return an error to show.
+
+    Reads the table **now**, not at import. A dialer that caches credentials
+    hands out yesterday's token and blames the far end for refusing it.
+    """
     if MISCONFIGURED:
         return MISCONFIGURED
-    if who in CONTACTS:
-        row = CONTACTS[who]
+    contacts = _contacts()
+    if who in contacts:
+        row = contacts[who]
         if not row.get("token"):
             return f"ERROR: «{who}» is in the contact list with no credential yet."
         return who, row["url"], row["token"]
-    known = ", ".join(NAMES) or "nobody"
+    known = ", ".join(sorted(contacts)) or "nobody"
     return f"ERROR: «{who}» is not in the contact list. You may call: {known}."
 
 
@@ -255,11 +278,12 @@ async def ask_agent(who: str, question: str) -> str:
 async def list_contacts() -> str:
     if MISCONFIGURED:
         return MISCONFIGURED
-    if not NAMES:
+    contacts = _contacts()
+    if not contacts:
         return "The contact list is empty. This phone cannot call anyone yet."
     lines = []
-    for name in NAMES:
-        row = CONTACTS.get(name)
+    for name in sorted(contacts):
+        row = contacts[name]
         cred = "credential held" if row.get("token") else "NO CREDENTIAL"
         lines.append(f"{name}  {row['url']}  [{cred}]"
                      + (f"  {row['note']}" if row.get("note") else ""))

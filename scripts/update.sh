@@ -15,7 +15,7 @@
 #
 set -euo pipefail
 
-VERSION="v0.3.3"
+VERSION="v0.3.4"
 REPO="https://github.com/JaimeCerezo/a2agates"
 VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
@@ -141,6 +141,21 @@ fi
 
 changed=$("$VENV/bin/python" -P -m a2agates.deploy converge 2>/dev/null) || true
 [ -n "$changed" ] && { echo "$changed"; deployment_changed=yes; }
+
+# systemd no relee un fichero de unidad porque haya cambiado en disco: hay que
+# decírselo. `install.sh` lo hacía y esto no, así que una máquina que tomaba el
+# camino barato --el que le decimos a todo el mundo que tome-- arrancaba el
+# ExecStart VIEJO contra el binario NUEVO.
+#
+# Medido por scm-intranet el 2026-09-22 actualizando a 0.3.0: systemd lanzó la
+# unidad anterior, con --auth-token-file y --token-expires, contra un binario
+# que ya no los acepta. status=2/INVALIDARGUMENT y 23 segundos sin teléfono
+# (17:47:40 → 17:48:03).
+#
+# Es la misma familia que todo lo demás de este módulo, y la más cara de todas:
+# lo que el instalador hacía y el actualizador no, falla en cada máquina ya
+# instalada y sólo en la ruta que más se usa.
+systemctl daemon-reload
 
 if [ -z "${package_changed:-}${deployment_changed:-}" ]; then
     echo "  nothing to restart"
