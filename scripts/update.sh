@@ -167,17 +167,40 @@ for env in "$ETC"/*.env; do
     n=$(basename "$env" .env)
     systemctl is-enabled "a2agates@$n" >/dev/null 2>&1 || continue
 
-    # Am I running INSIDE the phone I am about to restart? An agent updating
-    # itself while answering a call is the normal case, not an edge one -- it
-    # is how every machine is meant to keep current -- and restarting the
-    # service that is serving the call kills the call, the answer, and this
-    # script, halfway.
+    # Is ANYBODY on this phone right now? An agent updating itself while
+    # answering a call is the normal case, not an edge one -- it is how every
+    # machine is meant to keep current -- and restarting the service that is
+    # serving the call kills the call, the answer, and this script, halfway.
+    # So when the phone is busy we let go of the restart: hand it to systemd,
+    # which is not about to die, and let it happen once the call has hung up.
     #
-    # systemd puts every descendant of the unit in its cgroup, so the question
-    # is answerable for free, and the fix is to let go of the restart: hand it
-    # to systemd, which is not about to die, and let it happen once the call
-    # has hung up.
-    if grep -qs "a2agates@$n\.service" /proc/self/cgroup; then
+    # NOT `grep a2agates@$n.service /proc/self/cgroup`. That asked "am I
+    # inside?" -- identity by location -- and scm-intranet measured it failing
+    # on 2026-09-22 at 19:03:50 while updating to 0.3.4: the answering agent
+    # had launched this script with `systemd-run --unit=a2a-update` so the
+    # update would survive being cut, which is exactly what every call's
+    # preamble asks for. Detached, the script saw itself in a2a-update.service,
+    # concluded it was in no phone at all, and took the bare restart below.
+    # 0.3.4 landed at 19:04:29; the call died at 19:04:30 with code 143,
+    # unacknowledged. Any reasonable way of detaching -- systemd-run, nohup,
+    # setsid, tmux -- breaks a question about where the asker runs.
+    #
+    # The condition that matters is about the phone, not about us, and the
+    # waiter below already knows how to read it: anything in the unit's cgroup
+    # other than its MainPID is a call in progress. An empty ControlGroup or a
+    # MainPID of 0 means the phone is not running at all -- do not read the
+    # root cgroup and mistake the whole machine for a caller.
+    cg="/sys/fs/cgroup$(systemctl show -p ControlGroup --value "a2agates@$n")/cgroup.procs"
+    main=$(systemctl show -p MainPID --value "a2agates@$n")
+    busy=0
+    if [ -n "$main" ] && [ "$main" != "0" ] && [ -r "$cg" ]; then
+        busy=$(grep -vx "$main" "$cg" 2>/dev/null | wc -l)
+    fi
+
+    # An operator on SSH waits too, and that is the price: the phone is busy,
+    # and we cannot tell a caller's `claude` from anyone else's. The 20 min cap
+    # and the RESTART IT YOURSELF line below are what that costs.
+    if [ "$busy" -gt 0 ]; then
         # NOT a timer. v0.1.22 used `systemd-run --on-active=20` here and
         # scm-intranet took it apart the same day: a fixed delay does not wait
         # for anybody to hang up. It turned "you are killed at 0s" into "you
@@ -188,8 +211,6 @@ for env in "$ETC"/*.env; do
         # last `claude` under it is gone, which is the actual condition. It
         # runs as its own transient unit, outside that cgroup, so it does not
         # see itself and does not die with the call.
-        cg="/sys/fs/cgroup$(systemctl show -p ControlGroup --value "a2agates@$n")/cgroup.procs"
-        main=$(systemctl show -p MainPID --value "a2agates@$n")
         systemd-run --collect --unit="a2agates-bounce-$n" \
             /bin/bash -c "
                 for _ in \$(seq 1 600); do
