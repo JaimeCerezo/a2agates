@@ -8,4 +8,4 @@ Two halves:
   another one without leaving its conversation.
 """
 
-__version__ = "0.1.29"
+__version__ = "0.1.30"

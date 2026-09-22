@@ -52,9 +52,56 @@ def _dir(args) -> Path:
 # --------------------------------------------------------------------------
 # callers: who may ring this phone
 # --------------------------------------------------------------------------
-def caller_add(args) -> None:
+def _mint(path: Path, alias: str) -> str:
+    """Make room for a new credential under an alias that may already exist.
+
+    ``alias`` is the primary key and revoking keeps the row, so the obvious
+    flow -- revoke, then register again -- failed with a constraint error the
+    first time it was tried for real. Rotation is not an edge case; it is the
+    normal life of a credential.
+
+    The old row is kept under a stamped alias instead of being deleted, so
+    *"who had access in March?"* still has an answer, and the name is free
+    again.
+    """
+    with _conn(path) as c:
+        row = c.execute("SELECT * FROM callers WHERE alias=?", (alias,)).fetchone()
+        if row is not None:
+            if not row["revoked_at"]:
+                sys.exit(
+                    f"a2agates-admin: «{alias}» is active. Use `caller rotate "
+                    f"{alias}` to replace its token, or `caller revoke {alias}` "
+                    "first if you mean to take the access away."
+                )
+            stamp = row["revoked_at"].replace(":", "").replace("-", "")[:15]
+            c.execute(
+                "UPDATE callers SET alias=? WHERE alias=?",
+                (f"{alias}@revoked-{stamp}", alias),
+            )
+    return secrets.token_urlsafe(32)
+
+
+def caller_rotate(args) -> None:
+    """New token, same caller. Everything else about the row stays put."""
     path = _dir(args) / "callers.db"
     token = secrets.token_urlsafe(32)
+    with _conn(path) as c:
+        n = c.execute(
+            "UPDATE callers SET token_hash=? WHERE alias=? AND revoked_at IS NULL",
+            (callers_mod.token_hash(token), args.alias),
+        ).rowcount
+    if not n:
+        sys.exit(f"a2agates-admin: no active caller «{args.alias}».")
+    print(f"«{args.alias}» rotated. The previous token stops working now.")
+    print()
+    print(f"  token:   {token}")
+    print()
+    print("  Shown once. Carry it by hand; tell an agent the PATH, not the value.")
+
+
+def caller_add(args) -> None:
+    path = _dir(args) / "callers.db"
+    token = _mint(path, args.alias)
     expires = (
         (datetime.now(timezone.utc) + timedelta(days=args.days)).isoformat(
             timespec="seconds"
@@ -220,6 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     a = c.add_parser("revoke", help="revoke a caller, keeping the record")
     a.add_argument("alias")
     a.set_defaults(func=caller_revoke)
+
+    a = c.add_parser("rotate", help="mint a new token for an existing caller")
+    a.add_argument("alias")
+    a.set_defaults(func=caller_rotate)
 
     t = sub.add_parser("contact", help="who this phone may ring").add_subparsers(
         dest="sub", required=True
