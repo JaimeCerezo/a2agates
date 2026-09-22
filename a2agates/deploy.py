@@ -78,6 +78,21 @@ Wants=network-online.target docker.service
 [Service]
 Type=exec
 User={user}
+# Without this the phone says nothing at all. Python block-buffers stdout when
+# it is not a terminal, and a service never exits, so the buffer never
+# flushes: the whole startup banner -- version, where it listens, what it
+# advertises, how many callers, permissions, budget -- was invisible in the
+# journal on every machine, always. Measured on 2026-09-22: zero banner lines
+# across hours and several restarts.
+#
+# The line that made it worth a release is not the banner, though. It is this
+# one, printed at startup and also to stdout:
+#
+#     NOTE: n call(s) started and never finished
+#
+# That is the warning meant to be read after a call died mid-write, and nobody
+# had ever seen it.
+Environment=PYTHONUNBUFFERED=1
 EnvironmentFile={etc}/%i.env
 ExecStart={venv}/bin/a2agates \\
     --cwd ${{A2A_CWD}} \\

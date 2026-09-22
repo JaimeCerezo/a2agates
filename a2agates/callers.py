@@ -82,6 +82,18 @@ def address_allowed(address: str | None, allowed_from: str) -> bool:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
+    # An IPv4 connection on a dual-stack box can arrive as ``::ffff:192.0.2.10``,
+    # which read literally is an IPv6 address and does NOT match 192.0.2.10/32
+    # -- the same machine, refused. DESIGN.md has listed this as a known trap
+    # since the start, described as "one line of code, and an hour of confusion
+    # if forgotten", and then it was forgotten until 2026-09-22.
+    #
+    # What makes it expensive is how it shows up: the caller is correctly
+    # registered, holds the right token, and gets a 401 indistinguishable from
+    # an unknown, revoked or expired one -- because those are deliberately
+    # indistinguishable. There is no thread to pull.
+    if getattr(ip, "ipv4_mapped", None) is not None:
+        ip = ip.ipv4_mapped
     for net in nets:
         try:
             if ip in ipaddress.ip_network(net, strict=False):

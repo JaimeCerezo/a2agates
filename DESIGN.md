@@ -837,14 +837,29 @@ With the slash. `0.0.0.0` on its own **is a specific address** — the
 
 ### Three traps
 
-**`0.0.0.0/0` is IPv4 only.** A call arriving over IPv6 does not match and gets
-rejected. It closes rather than opens, so it is safe, but it will drive whoever
-debugs it mad because it *looks* wide open. "Any" really needs both.
+**`0.0.0.0/0` means "anybody", IPv6 included** — and this paragraph used to say
+the opposite, which is worth keeping as a correction rather than a silent edit.
+It claimed the mask was IPv4 only, so a call over IPv6 would be rejected: *"it
+closes rather than opens, so it is safe"*. Measured on 2026-09-22: it does not.
+The check short-circuits on either all-zero mask and admits the call.
+
+The behaviour is the right one — somebody who writes "from anywhere" means it —
+but the direction of the error is the lesson. A document describing a
+**fail-closed** trap, over code that **opens**, is worse than no document:
+anyone auditing by reading it audits something that does not exist. Write
+`["0.0.0.0/0", "::/0"]` anyway, so the row says what it does.
 
 **IPv4-mapped addresses.** On a dual-stack box an IPv4 connection can show up as
-`::ffff:192.0.2.10`. Read literally that is an IPv6 address and **does not match
-`192.0.2.10/32`** even though it is the same machine. Normalise before
-comparing: one line of code, and an hour of confusion if forgotten.
+`::ffff:192.0.2.10`. Read literally that is an IPv6 address and does not match
+`192.0.2.10/32` even though it is the same machine. **Normalised since v0.3.1**,
+and this trap sat here describing itself, with the fix in the sentence, for as
+long as the code had the bug — *"one line of code, and an hour of confusion if
+forgotten"*, and it was forgotten.
+
+The reason it stayed hidden is the same property that makes the door safe: a
+caller who is correctly registered, holding the right token, gets a 401
+**indistinguishable** from unknown, revoked or expired. A deliberately mute
+refusal is exactly the place a bug can sit without ever being reported.
 
 **An absent field does not open: it refuses to start.** If empty meant "from
 anywhere", a typo or a deleted line would **open the door silently**. Broken
