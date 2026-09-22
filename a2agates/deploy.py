@@ -289,16 +289,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {item} updated")
         return 0
     if args and args[0] == "constants":
-        # Every value quoted, and the reason is a bug that took a while to see.
-        # This printed `TOOLS=a2agates-note a2agates-log` unquoted, and the
-        # shell's `eval` read it the only way it could: assign TOOLS for one
-        # command, then RUN `a2agates-log`. So every update quietly printed the
-        # call log in the middle of its output. Harmless here; it would not
-        # have been if the second word had been something that changes things.
+        # What the shell scripts need from the package, as assignments they can
+        # `eval`. Only what a script actually uses: a fourth line printed a
+        # TOOLS list that nothing has read since converge() took over placing
+        # the commands, and the variable behind it had been renamed to
+        # COMMANDS -- so this crashed with NameError on every single install.
+        #
+        # It survived because the three lines above are already on stdout by
+        # then, and `eval "$(cmd)"` reports the status of the eval, not of the
+        # substitution, so `set -e` never saw it. Cost while it lasted: a
+        # traceback in the middle of every install, which teaches whoever runs
+        # it to ignore tracebacks. Cost if it had lasted: any constant added
+        # below this point would never have reached the installer, in silence
+        # -- which is the exact failure this module exists to kill.
+        #
+        # Every value is quoted, and that is a bug of its own worth not
+        # repeating: unquoted, `eval` read `TOOLS=a2agates-note a2agates-log`
+        # the only way it could -- assign for one command, then RUN the second
+        # word. Every update quietly printed the call log. Harmless that time.
         print(f'MAX_TURNS="{MAX_TURNS}"')
         print(f'MAX_BUDGET="{MAX_BUDGET}"')
         print(f'STATE="{STATE}"')
-        print(f'TOOLS="{" ".join(TOOLS)}"')
         return 0
     print("usage: -m a2agates.deploy {unit <user>|constants|converge [user]}", file=sys.stderr)
     return 2
