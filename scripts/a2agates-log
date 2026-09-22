@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# a2agates-log — read a phone's call log.
+#
+# A log nobody can read is a log nobody reads. This is the whole reading side:
+# three questions, no SQL.
+#
+#   a2agates-log                     the last calls, newest first
+#   a2agates-log --open              the ones that started and never finished
+#   a2agates-log --same "<text>"     has this exact request run here before?
+#
+# The last one is the point of the table. Before re-sending something that is
+# not idempotent, ask -- an unfinished row means it ran and nobody learned how
+# it ended, so go and look at what it left behind.
+#
+set -euo pipefail
+
+VENV=/opt/a2agates/venv
+ROOT=/var/lib/a2agates
+
+phone=""; mode=recent; arg=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --phone) phone="$2"; shift 2 ;;
+        --open)  mode=open; shift ;;
+        --same)  mode=same; arg="$2"; shift 2 ;;
+        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "a2agates-log: unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+if [ -z "$phone" ]; then
+    phone=$(ls -1 "$ROOT" 2>/dev/null | head -1 || true)
+    [ -n "$phone" ] || { echo "a2agates-log: no phone found under $ROOT" >&2; exit 1; }
+fi
+DB="$ROOT/$phone/callers.db"
+[ -f "$DB" ] || { echo "a2agates-log: no log at $DB" >&2; exit 1; }
+
+"$VENV/bin/python" -P - "$DB" "$mode" "$arg" <<'PY'
+import hashlib, sqlite3, sys
+
+db, mode, arg = sys.argv[1], sys.argv[2], sys.argv[3]
+conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+
+
+def show(r):
+    state = r["outcome"] or "UNFINISHED"
+    cost = f"{r['cost_usd']:.4f}" if r["cost_usd"] is not None else "-"
+    who = r["caller"] or r["remote_addr"] or "?"
+    print(f"{r['started_at']}  {r['direction']:3} {state:24} {cost:>8}  {who}")
+    if r["request_excerpt"]:
+        print(f"    {r['request_excerpt'][:100]}")
+    if r["note"]:
+        print(f"    note: {r['note']}")
+
+
+if mode == "open":
+    rows = conn.execute(
+        "SELECT * FROM calls WHERE finished_at IS NULL ORDER BY started_at DESC"
+    ).fetchall()
+    if not rows:
+        print("no unfinished calls.")
+    else:
+        print(f"{len(rows)} call(s) started and never finished.")
+        print("These ran; nobody learned how they ended. Check what they left.\n")
+        for r in rows:
+            show(r)
+elif mode == "same":
+    digest = hashlib.sha256(arg.encode("utf-8", "replace")).hexdigest()
+    r = conn.execute(
+        "SELECT * FROM calls WHERE request_sha256=? ORDER BY started_at DESC LIMIT 1",
+        (digest,),
+    ).fetchone()
+    if r is None:
+        print("not seen before -- safe to send.")
+    else:
+        show(r)
+        if r["finished_at"] is None:
+            print("\nWARNING: this exact request ran and never finished.")
+            print("Do NOT simply re-send it if it changes anything.")
+else:
+    rows = conn.execute("SELECT * FROM calls ORDER BY started_at DESC LIMIT 20").fetchall()
+    if not rows:
+        print("no calls logged yet.")
+    for r in rows:
+        show(r)
+PY

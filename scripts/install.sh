@@ -21,7 +21,7 @@ set -euo pipefail
 
 # The version this script installs. Bumped with each release, so fetching the
 # script from main and running it gets you the current phone.
-VERSION="v0.1.19"
+VERSION="v0.1.20"
 REPO="https://github.com/JaimeCerezo/a2agates"
 
 # ---------------------------------------------------------------------------
@@ -158,12 +158,14 @@ if [ ! -f /var/lib/a2agates/mailbox.md ]; then
         > /var/lib/a2agates/mailbox.md
     chmod 666 /var/lib/a2agates/mailbox.md
 fi
-if [ -f "$(dirname "$0")/a2agates-note" ]; then
-    install -m 755 "$(dirname "$0")/a2agates-note" /usr/local/bin/a2agates-note
-else
-    curl -fsSL "https://raw.githubusercontent.com/JaimeCerezo/a2agates/$VERSION/scripts/a2agates-note" \
-        -o /usr/local/bin/a2agates-note 2>/dev/null && chmod 755 /usr/local/bin/a2agates-note || true
-fi
+for tool in a2agates-note a2agates-log; do
+    if [ -f "$(dirname "$0")/$tool" ]; then
+        install -m 755 "$(dirname "$0")/$tool" "/usr/local/bin/$tool"
+    else
+        curl -fsSL "https://raw.githubusercontent.com/JaimeCerezo/a2agates/$VERSION/scripts/$tool" \
+            -o "/usr/local/bin/$tool" 2>/dev/null && chmod 755 "/usr/local/bin/$tool" || true
+    fi
+done
 [ -x /usr/local/bin/a2agates-note ] && info "mailbox ready: a2agates-note \"...\""
 
 # --- the phone's own folder ------------------------------------------------
@@ -217,6 +219,16 @@ EOF
     chown "$USER_:$USER_" "$CWD/CLAUDE.md"
 fi
 
+# --- the phone's databases -------------------------------------------------
+# Created at install, all of them, even the ones nothing writes to yet. An
+# empty table costs nothing; a missing one turns the day you need it into a
+# migration on a live phone.
+DBDIR=/var/lib/a2agates/$NAME
+install -d -o "$USER_" -g "$USER_" -m 700 "$DBDIR"
+sudo -u "$USER_" "$VENV/bin/python" -P -c \
+    "import a2agates.db as d, sys; print(' '.join(str(p.name) for p in d.init(sys.argv[1])))" \
+    "$DBDIR" >/dev/null && info "databases: $DBDIR/{callers.db,contacts.db}"
+
 # --- the credential --------------------------------------------------------
 install -d -m 755 "$ETC"
 TOKEN_FILE="${KEEP_TOKEN:-$ETC/$NAME.token}"
@@ -250,6 +262,7 @@ A2A_HOST=$HOST
 A2A_PORT=$PORT
 A2A_PUBLIC_URL=$URL
 A2A_TOKEN_FILE=$TOKEN_FILE
+A2A_DB=$DBDIR
 A2A_MAX_TURNS=$MAX_TURNS
 A2A_MAX_BUDGET=$MAX_BUDGET
 A2A_TOKEN_EXPIRES=$EXPIRES
@@ -275,6 +288,7 @@ ExecStart=$VENV/bin/a2agates \\
     --port \${A2A_PORT} \\
     --public-url \${A2A_PUBLIC_URL} \\
     --auth-token-file \${A2A_TOKEN_FILE} \\
+    --db \${A2A_DB} \\
     --full-permissions \\
     --max-turns \${A2A_MAX_TURNS} \\
     --max-budget \${A2A_MAX_BUDGET} \\

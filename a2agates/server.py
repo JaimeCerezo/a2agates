@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -57,7 +58,7 @@ from a2a.utils.constants import PROTOCOL_VERSION_CURRENT, TransportProtocol
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 
-from . import __version__
+from . import __version__, db
 
 log = logging.getLogger("a2agates.server")
 
@@ -123,10 +124,42 @@ class BearerAuth:
     property.
     """
 
-    def __init__(self, app, *, token: str, expires_at: datetime | None = None) -> None:
+    def __init__(
+        self,
+        app,
+        *,
+        token: str,
+        expires_at: datetime | None = None,
+        log_db: str | None = None,
+    ) -> None:
         self.app = app
         self._token = token.strip().encode()
         self._expires_at = expires_at
+        # Refused calls are the security-relevant rows, and until now they left
+        # no trace anywhere at all.
+        self._log_db = log_db
+
+    def _refused(self, scope, outcome: str, presented: bytes) -> None:
+        if not self._log_db:
+            return
+        # The first 8 hex of the hash of what was presented -- never the value.
+        # Enough to tell one wrong token trying five hundred times from five
+        # hundred different ones, which is the difference between somebody's
+        # stale config and somebody sweeping.
+        prefix = (
+            hashlib.sha256(presented).hexdigest()[:8] if presented else None
+        )
+        client = scope.get("client") or (None, None)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        db.begin(
+            self._log_db,
+            direction="in",
+            outcome=outcome,
+            remote_addr=client[0],
+            auth="none",
+            cred_prefix=prefix,
+            finished_at=now,
+        )
 
     def _expired(self) -> bool:
         return (
@@ -161,6 +194,7 @@ class BearerAuth:
         # get told why, instead of debugging a silent refusal.
         if ok and self._expired():
             log.warning("expired credential presented (expiry %s)", self._expires_at)
+            self._refused(scope, "auth_expired", parts[1].strip() if len(parts) == 2 else b"")
             await _refuse(send, b'{"error":"credential expired"}')
             return
 
@@ -168,6 +202,7 @@ class BearerAuth:
             await self.app(scope, receive, send)
             return
 
+        self._refused(scope, "auth_failed", parts[1].strip() if len(parts) == 2 else b"")
         await _refuse(send, b'{"error":"unauthorized"}')
 
 
@@ -359,8 +394,9 @@ class LocalClaude:
 # The translation: from what claude says to what A2A understands
 # --------------------------------------------------------------------------
 class PhoneExecutor(AgentExecutor):
-    def __init__(self, engine: LocalClaude) -> None:
+    def __init__(self, engine: LocalClaude, log_db: str | None = None) -> None:
         self._engine = engine
+        self._log_db = log_db
         # A2A contextId -> claude session_id. This is what turns a handful of
         # separate calls into one conversation.
         #
@@ -389,12 +425,30 @@ class PhoneExecutor(AgentExecutor):
             )
             return
 
+        # The row goes in BEFORE the agent runs, and this is the whole design.
+        # If rows were only written on completion, a call killed halfway would
+        # leave no trace -- and that is precisely the call you need to know
+        # about. An old row with finished_at NULL is not a missing record: it
+        # is the record. It says this ran and nobody ever learned how it ended,
+        # so go and look at what it left behind.
+        digest, excerpt = db.request_digest(prompt)
+        row = db.begin(
+            self._log_db,
+            direction="in",
+            task_id=task_id,
+            context_id=context_id,
+            auth="token",
+            request_sha256=digest,
+            request_excerpt=excerpt,
+        ) if self._log_db else None
+
         try:
             result = await self._engine.ask(
                 prompt, resume=self._sessions.get(context_id)
             )
         except Exception as e:  # noqa: BLE001 - every failure is reported to the caller
             log.exception("the call failed")
+            db.finish(self._log_db, row, outcome="crashed", note=str(e)[:500])
             await updater.failed(message=updater.new_agent_message([Part(text=str(e))]))
             return
 
@@ -424,16 +478,37 @@ class PhoneExecutor(AgentExecutor):
         #
         # This is not the call log -- that needs the callers table, to say WHO
         # rang. It is the half that costs one line and removes the blindness.
+        outcome = result.get("subtype") or ("error" if result.get("is_error") else "ok")
         log.info(
             "call finished: context=%s session=%s outcome=%s turns=%s "
             "cost=%s duration_ms=%s denials=%d",
             context_id,
             session_id,
-            result.get("subtype") or ("error" if result.get("is_error") else "ok"),
+            outcome,
             meta["num_turns"],
             meta["cost_usd"],
             meta["duration_ms"],
             len(meta["permission_denials"]),
+        )
+
+        # Closing the row opened before the agent ran. A note on the outcomes
+        # that can leave work half done, because a bare 'error_max_budget_usd'
+        # does not tell whoever reads this later that the machine may be
+        # sitting in an inconsistent state.
+        note = None
+        if outcome == "error_max_budget_usd":
+            note = ("killed between turns by the budget cap -- may have left "
+                    "work half done; check before retrying")
+        db.finish(
+            self._log_db,
+            row,
+            outcome=outcome,
+            claude_session=session_id,
+            turns=meta["num_turns"],
+            cost_usd=meta["cost_usd"],
+            duration_ms=meta["duration_ms"],
+            denials=len(meta["permission_denials"]),
+            note=note,
         )
 
         text = (result.get("result") or "").strip() or "(no answer)"
@@ -549,6 +624,14 @@ def main(argv: list[str] | None = None) -> int:
         "cap, which is only a proxy. Checked between turns, so a single "
         "expensive turn can overshoot it.",
     )
+    ap.add_argument(
+        "--db",
+        default=None,
+        metavar="DIR",
+        help="Directory holding this phone's databases (callers.db, "
+        "contacts.db). Created if missing. Without it the phone works exactly "
+        "as before but keeps no record of who called or how it went.",
+    )
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
 
@@ -597,6 +680,21 @@ def main(argv: list[str] | None = None) -> int:
         auth=token is not None,
     )
 
+    log_db = None
+    if args.db:
+        callers_db, _ = db.init(args.db)
+        log_db = str(callers_db)
+        # Said at startup rather than left to be discovered. A call that
+        # started and never closed is the trace of one that was killed
+        # halfway -- and if this phone can write, halfway may mean a commit
+        # without a push, or a deploy without either.
+        stranded = db.unfinished(log_db)
+        if stranded:
+            print(f"  NOTE: {len(stranded)} call(s) started and never finished:")
+            for r in stranded[:5]:
+                print(f"    {r['started_at']}  {(r['request_excerpt'] or '')[:60]}")
+            print("    Look at what they left before assuming the machine is clean.")
+
     engine = LocalClaude(
         cwd=str(cwd),
         executable=args.claude,
@@ -607,7 +705,7 @@ def main(argv: list[str] | None = None) -> int:
         max_budget_usd=args.max_budget,
     )
     handler = DefaultRequestHandler(
-        agent_executor=PhoneExecutor(engine),
+        agent_executor=PhoneExecutor(engine, log_db=log_db),
         task_store=InMemoryTaskStore(),
         agent_card=card,
     )
@@ -616,7 +714,7 @@ def main(argv: list[str] | None = None) -> int:
         *create_jsonrpc_routes(handler, rpc_url="/"),
     ]
     middleware = (
-        [Middleware(BearerAuth, token=token, expires_at=expires_at)]
+        [Middleware(BearerAuth, token=token, expires_at=expires_at, log_db=log_db)]
         if token
         else None
     )
