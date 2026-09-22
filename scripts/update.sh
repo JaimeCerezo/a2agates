@@ -21,6 +21,13 @@ VENV=/opt/a2agates/venv
 ETC=/etc/a2agates
 UNIT=/etc/systemd/system/a2agates@.service
 
+# Una salida cortada se leía como éxito. Este script imprime su progreso línea
+# a línea, y la última que llegó a imprimirse el 2026-09-22 fue "updated to
+# 0.3.5" -- que suena a final feliz y era el paso de en medio: el paquete ya
+# estaba en disco y el listener seguía siendo el viejo. Quien mira la salida no
+# tiene por qué saber qué línea era la última prevista, así que lo decimos.
+trap 'rc=$?; [ "$rc" -eq 0 ] || echo "  SIN TERMINAR -- el script murió con código $rc; el listener puede seguir siendo el viejo"' EXIT
+
 
 # Which version to install. The constant below is a floor, not the answer:
 # raw.githubusercontent serves a cached copy of this script for a few minutes
@@ -135,7 +142,7 @@ else
     "$VENV/bin/pip" install --quiet --upgrade --force-reinstall "git+$REPO@$VERSION" \
         || die "update failed; the running phone is untouched."
     now=$("$VENV/bin/python" -P -c 'import a2agates;print(a2agates.__version__)')
-    echo "  updated to $now"
+    echo "  package updated to $now -- listener still the old one until restarted"
     package_changed=yes
 fi
 
@@ -157,15 +164,38 @@ changed=$("$VENV/bin/python" -P -m a2agates.deploy converge 2>/dev/null) || true
 # instalada y sólo en la ruta que más se usa.
 systemctl daemon-reload
 
-if [ -z "${package_changed:-}${deployment_changed:-}" ]; then
-    echo "  nothing to restart"
-    exit 0
-fi
+# La pregunta que salva no es "¿he cambiado algo en ESTA ejecución?" sino "¿lo
+# que corre es lo que hay en disco?". Con la primera, un update que muere entre
+# el pip y el restart no se arregla nunca: al reintentar, el paquete ya está al
+# día, converge no imprime nada, y el script decía "nothing to restart" sobre
+# una máquina con código nuevo en disco y proceso viejo sirviendo. Se quedaba
+# así indefinidamente, y sólo una mano lo sacaba de ahí.
+#
+# Con la segunda, un update fallido se arregla solo en la pasada siguiente.
+# Cualquiera de las tres cosas que definen al teléfono -- el paquete, su unidad
+# y su env -- más nueva que el arranque del servicio significa que lo que corre
+# ya no es lo que hay en disco. Un servicio que nunca arrancó también cuenta.
+stale() {
+    local n=$1 env=$2 started
+    started=$(systemctl show -p ActiveEnterTimestamp --value "a2agates@$n" 2>/dev/null) || return 0
+    [ -n "$started" ] || return 0
+    started=$(date -d "$started" +%s 2>/dev/null) || return 0
+    [ -n "$(find "$site/a2agates" "$UNIT" "$env" -newermt "@$started" -print -quit 2>/dev/null)" ]
+}
+
+forced=no
+[ -n "${package_changed:-}${deployment_changed:-}" ] && forced=yes
+restarts=0
 
 for env in "$ETC"/*.env; do
     [ -f "$env" ] || continue
     n=$(basename "$env" .env)
     systemctl is-enabled "a2agates@$n" >/dev/null 2>&1 || continue
+
+    if [ "$forced" = no ] && ! stale "$n" "$env"; then
+        continue
+    fi
+    restarts=$((restarts + 1))
 
     # Is ANYBODY on this phone right now? An agent updating itself while
     # answering a call is the normal case, not an edge one -- it is how every
@@ -194,7 +224,18 @@ for env in "$ETC"/*.env; do
     main=$(systemctl show -p MainPID --value "a2agates@$n")
     busy=0
     if [ -n "$main" ] && [ "$main" != "0" ] && [ -r "$cg" ]; then
-        busy=$(grep -vx "$main" "$cg" 2>/dev/null | wc -l)
+        # El `|| true` no es cosmético. `grep` devuelve 1 cuando no encuentra
+        # nada, y "no encuentra nada" es justo el caso bueno: teléfono ocioso,
+        # en el cgroup sólo está el MainPID. Con `pipefail` el status de la
+        # sustitución es el del grep, no el del wc, así que `set -e` mataba el
+        # script AQUÍ -- una línea antes del restart.
+        #
+        # Medido por scm-intranet el 2026-09-22 actualizando a 0.3.5: paquete
+        # 0.3.5 en disco, listener todavía 0.3.4, salida cortada y código 1.
+        # Falla SÓLO cuando no hay nadie al teléfono, que es el caso que
+        # creíamos seguro; con una llamada abierta grep encuentra líneas,
+        # devuelve 0 y todo parece funcionar. Por eso pasó la prueba en vivo.
+        busy=$( { grep -vx "$main" "$cg" 2>/dev/null || true; } | wc -l )
     fi
 
     # An operator on SSH waits too, and that is the price: the phone is busy,
@@ -235,3 +276,5 @@ for env in "$ETC"/*.env; do
         printf '  phone %-16s NOT ANSWERING -- journalctl -u a2agates@%s\n' "$n" "$n"
     fi
 done
+
+[ "$restarts" -gt 0 ] || echo "  nothing to restart -- every phone is running what is on disk"
